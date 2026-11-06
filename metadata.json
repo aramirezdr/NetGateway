@@ -1,0 +1,8 @@
+{
+  "name": "NetGateway - Network Inventory & Web Terminal Gateway",
+  "description": "Enterprise-grade network device inventory and interactive Web Terminal Gateway bridging browsers to Cisco, HP/Aruba Comware, Palo Alto, and Terminal Servers via async SSH and bidirectional WebSockets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,30 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: #090d16;
+    color: #e2e8f0;
+  }
+}
+
+/* Custom terminal scrollbars */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.8);
+  border-radius: 3px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 1);
+}

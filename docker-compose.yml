@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  netgateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: netgateway-enterprise
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=change-this-to-a-strong-secret-in-production-2026
+    # NOTE FOR ENTERPRISE DEPLOYMENTS:
+    # If your network devices (Cisco/Aruba/Palo Alto) are on private VLANs
+    # reachable only through the host's network interfaces, you can enable:
+    # network_mode: "host"
+    # (and comment out the ports section above)
+    volumes:
+      - netgateway_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  netgateway_data:
+    driver: local

@@ -57,21 +57,6 @@ export async function loginWithCredentials(username: string, password: string): 
   return data;
 }
 
-export async function loginRole(role: UserRole = 'admin'): Promise<{ token: string; user: User }> {
-  const res = await fetch('/api/v1/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Authentication failed' }));
-    throw new Error(err.error || 'Authentication failed');
-  }
-  const data = await res.json();
-  setStoredToken(data.token);
-  setStoredUser(data.user);
-  return data;
-}
 
 export async function fetchUsers(): Promise<User[]> {
   const res = await fetch('/api/v1/users', {

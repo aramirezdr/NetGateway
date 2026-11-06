@@ -6,7 +6,6 @@ interface NavbarProps {
   currentTab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users';
   onSelectTab: (tab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users') => void;
   currentUser: User;
-  onSwitchRole: (role: UserRole) => void;
   onLogout: () => void;
   activeTerminalCount: number;
 }
@@ -15,7 +14,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onSelectTab,
   currentUser,
-  onSwitchRole,
   onLogout,
   activeTerminalCount,
 }) => {
@@ -119,23 +117,23 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
         </nav>
 
-        {/* Zone 3: Profile & Logout */}
+        {/* Zone 3: Authenticated Profile & Logout */}
         <div className="flex items-center gap-3 shrink-0">
-          <div className="flex items-center gap-2 border border-slate-800 rounded-lg bg-slate-900/80 px-2.5 py-1 text-xs">
+          <div className="flex items-center gap-2 border border-slate-800 rounded-lg bg-slate-900/80 px-2.5 py-1.5 text-xs">
             <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-slate-300 font-medium truncate max-w-[120px]">{currentUser.name}</span>
-            <span className="text-slate-600">/</span>
-            <select
-              value={currentUser.role}
-              onChange={(e) => onSwitchRole(e.target.value as UserRole)}
-              className="bg-transparent text-cyan-400 font-semibold focus:outline-none cursor-pointer text-xs"
-              title="Cambiar rol rápido para testing"
-            >
-              <option value="admin" className="bg-slate-900 text-slate-200">Admin</option>
-              <option value="net_engineer" className="bg-slate-900 text-slate-200">Engineer</option>
-              <option value="operator" className="bg-slate-900 text-slate-200">Operator</option>
-              <option value="auditor" className="bg-slate-900 text-slate-200">Auditor (Read-Only)</option>
-            </select>
+            <span className="text-slate-200 font-medium truncate max-w-[130px]">{currentUser.name}</span>
+            <span className="text-slate-600">·</span>
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold ${
+              currentUser.role === 'admin'
+                ? 'bg-rose-950/80 text-rose-300 border border-rose-800/50'
+                : currentUser.role === 'net_engineer'
+                ? 'bg-cyan-950/80 text-cyan-300 border border-cyan-800/50'
+                : currentUser.role === 'operator'
+                ? 'bg-blue-950/80 text-blue-300 border border-blue-800/50'
+                : 'bg-amber-950/80 text-amber-300 border border-amber-800/50'
+            }`}>
+              {currentUser.role.toUpperCase()}
+            </span>
           </div>
 
           <button

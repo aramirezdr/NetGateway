@@ -290,24 +290,6 @@ let usersStore: StoredUser[] = [
   },
 ];
 
-// Fallback helper to get user by role
-function getUserByRole(role: UserRole): User {
-  const found = usersStore.find(u => u.role === role && u.status === 'active');
-  if (found) {
-    const { passwordHash, ...clean } = found;
-    return clean;
-  }
-  return {
-    id: 'usr-admin-1',
-    username: 'admin',
-    name: 'Alex Rivera',
-    email: 'admin@enterprise.net',
-    role: 'admin',
-    permissions: ['all'],
-    status: 'active',
-  };
-}
-
 // Authentication Middleware
 function authenticateToken(req: Request, res: Response, next: () => void) {
   const authHeader = req.headers['authorization'];
@@ -338,18 +320,10 @@ function authenticateToken(req: Request, res: Response, next: () => void) {
 
 // ---------------- REST API ROUTES ----------------
 
-// Auth Login (Supports Username/Password and One-Click Demo Role Switch)
+// Strict Enterprise Login: Username and Password Required
 app.post('/api/v1/auth/login', (req: Request, res: Response) => {
-  const { username, password, role } = req.body;
+  const { username, password } = req.body;
 
-  // 1. One-click demo role shortcut
-  if (role && !username && !password) {
-    const cleanUser = getUserByRole(role as UserRole);
-    const token = jwt.sign(cleanUser, JWT_SECRET, { expiresIn: '12h' });
-    return res.json({ token, user: cleanUser });
-  }
-
-  // 2. Standard username/password login
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
   }
@@ -365,7 +339,8 @@ app.post('/api/v1/auth/login', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Account has been suspended. Contact an administrator.' });
   }
 
-  const isValidPassword = bcrypt.compareSync(password, foundUser.passwordHash) || password === 'AdminPassword2026!' || password === 'admin';
+  // Strict bcrypt cryptographic hash verification
+  const isValidPassword = bcrypt.compareSync(password, foundUser.passwordHash);
   if (!isValidPassword) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
@@ -778,17 +753,27 @@ server.on('upgrade', (request, socket, head) => {
   const deviceId = match[1];
   const token = url.searchParams.get('token');
 
-  // Verify JWT
-  let user: User = getUserByRole('admin');
-  if (token) {
-    try {
-      user = jwt.verify(token, JWT_SECRET) as User;
-    } catch (err) {
-      // Token invalid
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
+  // Strictly verify JWT token (No unauthenticated fallback)
+  if (!token) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  let user: User;
+  try {
+    user = jwt.verify(token, JWT_SECRET) as User;
+  } catch (err) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const existingAccount = usersStore.find(u => u.id === user.id || u.username === user.username);
+  if (!existingAccount || existingAccount.status === 'suspended') {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
   }
 
   // RBAC Permission check: Auditor role cannot start interactive terminal sessions

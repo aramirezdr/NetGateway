@@ -136,18 +136,16 @@ For detailed production instructions, systemd service setup, and VLAN network ro
 
 ---
 
-## 🔑 Default Demo Accounts
+## 🔑 Initial Administrator Account & Security Hardening
 
-For evaluation and testing of Role-Based Access Control:
+Authentication is strictly enforced across all REST and WebSocket endpoints. There are no client-side role bypasses or demo shortcuts:
 
-| Role | Username | Password | Access Capabilities |
+| Role | Initial Username | Initial Password | Access Capabilities |
 | :--- | :--- | :--- | :--- |
 | **Administrator** | `admin` | `AdminPassword2026!` | Full platform control, User management, Vault, Inventory CRUD, Web CLI |
-| **Network Engineer** | `marcus.vance` | `Engineer2026!` | Inventory asset management, Ping prober, Interactive Web CLI |
-| **NOC Operator** | `elena.rostova` | `Operator2026!` | Device inspection and interactive Web CLI diagnostics |
-| **Compliance Auditor**| `david.kim` | `Auditor2026!` | Read-only inventory and audit logs (CLI execution restricted) |
 
-*You can also click any of the 4 quick demo buttons directly on the Login Screen.*
+> 🔒 **Security Notice for Production:**
+> After first deployment, immediately log in as `admin`, navigate to **`Users & RBAC`**, and change the initial administrator password or create personalized administrator accounts. All passwords are encrypted at rest using `bcrypt (salt 10)`.
 
 ---
 

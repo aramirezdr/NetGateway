@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { Device, Credential, AuditLogEntry, User, UserRole, ActiveTerminalTab } from './types/index.ts';
 import { 
-  loginRole, 
   fetchDevices, 
   fetchCredentials, 
   fetchAuditLogs, 
@@ -91,16 +90,6 @@ export default function App() {
     setActiveTabId(null);
   };
 
-  const handleSwitchRole = async (newRole: UserRole) => {
-    try {
-      const res = await loginRole(newRole);
-      setCurrentUser(res.user);
-      const logs = await fetchAuditLogs();
-      setAuditLogs(logs);
-    } catch (e) {
-      console.error('Role switch failed:', e);
-    }
-  };
 
   const handleLaunchTerminal = (device: Device) => {
     const existing = terminalTabs.find(t => t.deviceId === device.id);
@@ -181,7 +170,6 @@ export default function App() {
         currentTab={currentView}
         onSelectTab={setCurrentView}
         currentUser={currentUser}
-        onSwitchRole={handleSwitchRole}
         onLogout={handleLogout}
         activeTerminalCount={terminalTabs.length}
       />

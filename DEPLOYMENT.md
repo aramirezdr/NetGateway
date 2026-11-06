@@ -1,6 +1,191 @@
-# Guía de Despliegue Empresarial — NetGateway
+# Enterprise Deployment Guide — NetGateway
 
-Esta guía detalla los pasos para desplegar **NetGateway** en tu propia infraestructura corporativa (servidores físicos, máquinas virtuales en Proxmox/VMware, o instancias en la nube) para gestionar tu inventario y conectarte a tus routers, switches y firewalls reales.
+> **Language / Idioma:** **English (Primary)** | [Versión en Español (Secundaria)](#guía-de-despliegue-empresarial--netgateway-español)
+
+This guide provides step-by-step instructions for deploying **NetGateway** in your enterprise on-premise infrastructure (bare-metal servers, Proxmox/VMware virtual machines, or cloud VPC instances) to manage your inventory and establish direct, interactive web CLI sessions with physical/virtual routers, switches, and firewalls.
+
+---
+
+## Table of Contents
+1. [Server Prerequisites](#server-prerequisites)
+2. [Option 1: Docker & Docker Compose Deployment (Recommended)](#option-1-docker--docker-compose-deployment-recommended)
+3. [Option 2: Native Node.js & systemd Service](#option-2-native-nodejs--systemd-service)
+4. [Option 3: Nginx Reverse Proxy with SSL (HTTPS / WSS)](#option-3-nginx-reverse-proxy-with-ssl-https--wss)
+5. [Option 4: Python FastAPI Reference Backend (asyncssh)](#option-4-python-fastapi-reference-backend-asyncssh)
+6. [Verifying Connectivity with Real Network Devices](#verifying-connectivity-with-real-network-devices)
+7. [Versión en Español](#guía-de-despliegue-empresarial--netgateway-español)
+
+---
+
+## Server Prerequisites
+
+- **Operating System:** Ubuntu 22.04/24.04 LTS, Debian 12, RHEL 9, or Rocky Linux 9.
+- **Recommended Hardware:**
+  - 2 vCPU
+  - 4 GB RAM
+  - 20 GB SSD storage
+- **Network Connectivity:**
+  - Routed L3 access or trunked interface to the management VLAN/subnet of your network devices (e.g., `10.x.x.x` or `172.16.x.x`).
+  - Outbound firewall rules permitted from NetGateway host to network assets:
+    - **SSH:** Port `22` (TCP)
+    - **Telnet:** Port `23` (TCP)
+    - **Terminal Servers / Console Pods:** Ports `2001` through `2016+` (TCP)
+  - Inbound firewall rules to NetGateway:
+    - Port `443` (HTTPS / WSS) with Reverse Proxy, or Port `3000` (Direct)
+
+---
+
+## Option 1: Docker & Docker Compose Deployment (Recommended)
+
+This is the fastest, fully isolated method for running NetGateway in production.
+
+### 1. Clone or copy the project to your server
+```bash
+git clone <YOUR_REPOSITORY_URL> netgateway
+cd netgateway
+```
+
+### 2. Configure Environment Variables
+Create your production `.env` file:
+```bash
+cp .env.example .env
+nano .env
+```
+Set a strong, high-entropy secret for JWT token signing and AES-256-GCM vault encryption:
+```env
+PORT=3000
+NODE_ENV=production
+JWT_SECRET="EnterYourVeryLongAndSecureEnterpriseSecretKey2026!"
+```
+
+### 3. Build and launch with Docker Compose
+```bash
+# Build images and start in detached mode
+docker compose up -d --build
+
+# Verify container status and logs
+docker compose ps
+docker compose logs -f
+```
+
+The gateway will be accessible at: `http://<YOUR_SERVER_IP>:3000`
+
+> 💡 **Tip for Isolated Management VLANs (Direct L3 Routing):**
+> If your server has dedicated network interfaces (NICs) connected to isolated out-of-band management VLANs, you can uncomment `network_mode: "host"` in `docker-compose.yml`. This allows the container to use the host's native kernel routing table directly without traversing Docker NAT.
+
+---
+
+## Option 2: Native Node.js & systemd Service
+
+For bare-metal or VM deployments without Docker:
+
+### 1. Install Node.js 22 LTS
+On Ubuntu / Debian:
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs git
+```
+
+### 2. Install dependencies and compile the production build
+```bash
+sudo mkdir -p /opt/netgateway
+sudo cp -r . /opt/netgateway/
+cd /opt/netgateway
+npm install
+npm run build
+```
+
+### 3. Configure the systemd Service (`/etc/systemd/system/netgateway.service`)
+```ini
+[Unit]
+Description=NetGateway Enterprise Network Terminal Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netgateway
+ExecStart=/usr/bin/npx tsx /opt/netgateway/server.ts
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=JWT_SECRET=YourEnterpriseSecretKey2026!
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 4. Enable and start the system service
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now netgateway
+sudo systemctl status netgateway
+```
+
+---
+
+## Option 3: Nginx Reverse Proxy with SSL (HTTPS / WSS)
+
+In enterprise networks, interactive terminal sessions must be encrypted end-to-end via TLS (`https://` and `wss://`).
+
+1. Install Nginx:
+   ```bash
+   sudo apt install -y nginx
+   ```
+2. Copy the included `nginx.conf` file:
+   ```bash
+   sudo cp nginx.conf /etc/nginx/sites-available/netgateway.conf
+   sudo ln -s /etc/nginx/sites-available/netgateway.conf /etc/nginx/sites-enabled/
+   ```
+3. Edit your domain name and SSL certificate paths:
+   ```bash
+   sudo nano /etc/nginx/sites-available/netgateway.conf
+   ```
+4. Test and reload Nginx:
+   ```bash
+   sudo nginx -t
+   sudo systemctl reload nginx
+   ```
+
+> ⚠️ **Critical for WebSocket Sessions:** The `location /api/v1/ws/` block in `nginx.conf` sets `proxy_read_timeout 86400s;` and connection upgrade headers (`Upgrade $http_upgrade;`). This ensures long-running CLI sessions do not time out during operator idle periods.
+
+---
+
+## Option 4: Python FastAPI Reference Backend (asyncssh)
+
+If your enterprise backend policy requires Python:
+1. Navigate to the `/backend` directory:
+   ```bash
+   cd backend
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+2. Run FastAPI with Uvicorn:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+   ```
+
+---
+
+## Verifying Connectivity with Real Network Devices
+
+1. Open NetGateway in your browser and log in with your administrative account (`admin` / `AdminPassword2026!`).
+2. Navigate to **`Credentials Vault`** and store your SSH keys or TACACS+/RADIUS credentials with AES-256 encryption.
+3. Click **`+ Add Network Device`**.
+4. Enter your real router/switch/firewall management IP (e.g., `10.240.0.1`), vendor, and select the corresponding Vault Credential profile.
+5. Click the **`Ping`** button to run an ICMP reachability test from the server to the device.
+6. Click **`Web CLI`** to open the interactive browser-based terminal session.
+
+---
+---
+
+# Guía de Despliegue Empresarial — NetGateway (Español)
+
+> **Idioma:** [English (Primary)](#enterprise-deployment-guide--netgateway) | **Español (Secundaria)**
+
+Esta sección detalla los pasos para desplegar **NetGateway** en tu propia infraestructura corporativa (servidores físicos, máquinas virtuales en Proxmox/VMware, o instancias en la nube) para gestionar tu inventario y conectarte a tus routers, switches y firewalls reales.
 
 ---
 
@@ -157,8 +342,8 @@ Si tu infraestructura corporativa exige la ejecución del backend en Python:
 ## Verificación de Conectividad con tus Equipos Reales
 
 1. Inicia sesión en NetGateway con la cuenta `admin` / `AdminPassword2026!`.
-2. Ve a **`+ Add Network Device`**.
-3. Ingresa la IP de gestión de tu switch o router real (ej: `10.10.1.1`).
-4. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
-5. Registra las credenciales de acceso SSH en el **`Credentials Vault`**.
+2. Ve al **`Credentials Vault`** y guarda tus claves SSH o credenciales TACACS+/RADIUS con cifrado AES-256.
+3. Ve a **`+ Add Network Device`**.
+4. Ingresa la IP de gestión de tu switch o router real (ej: `10.240.0.1`), fabricante y selecciona el perfil de credencial correspondiente.
+5. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
 6. Haz clic en **`Web CLI`** para abrir la consola SSH interactiva directamente en tu navegador.

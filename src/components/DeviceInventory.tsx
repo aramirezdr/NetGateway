@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { Device, User, VendorType, ConnectionType } from '../types/index.ts';
+import type { Device, User, VendorType, ConnectionType, Credential } from '../types/index.ts';
 import { 
   Search, 
   Plus, 
@@ -16,11 +16,14 @@ import {
   XCircle,
   Clock,
   Layers,
-  Filter
+  Filter,
+  Key,
+  ShieldCheck
 } from 'lucide-react';
 
 interface DeviceInventoryProps {
   devices: Device[];
+  credentials?: Credential[];
   onLaunchTerminal: (device: Device) => void;
   onAddDevice: (deviceData: Partial<Device>) => Promise<void>;
   onUpdateDevice: (id: string, updates: Partial<Device>) => Promise<void>;
@@ -32,6 +35,7 @@ interface DeviceInventoryProps {
 
 export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   devices,
+  credentials = [],
   onLaunchTerminal,
   onAddDevice,
   onUpdateDevice,
@@ -60,10 +64,16 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   const [newConnectionType, setNewConnectionType] = useState<ConnectionType>('SSH');
   const [newPort, setNewPort] = useState('22');
   const [newTerminalLine, setNewTerminalLine] = useState('');
+  const [newCredentialsId, setNewCredentialsId] = useState<string>('');
   const [newLocation, setNewLocation] = useState('DC-Ashburn-Rack02');
   const [newTags, setNewTags] = useState('Core, Access');
   const [newDescription, setNewDescription] = useState('');
   const [formError, setFormError] = useState('');
+
+  // Reassignment state in details modal
+  const [reassignCredId, setReassignCredId] = useState<string>('');
+  const [isReassigning, setIsReassigning] = useState<boolean>(false);
+  const [reassignSuccess, setReassignSuccess] = useState<string>('');
 
   // Filtering
   const filteredDevices = devices.filter((d) => {
@@ -105,6 +115,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
     }
 
     try {
+      const selectedCred = newCredentialsId || (credentials && credentials.length > 0 ? credentials[0].id : 'cred-1');
       await onAddDevice({
         hostname: newHostname.trim().toUpperCase(),
         management_ip: newIp.trim(),
@@ -114,6 +125,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
         connection_type: newConnectionType,
         port: Number(newPort) || 22,
         terminal_line: newTerminalLine ? Number(newTerminalLine) : undefined,
+        credentials_id: selectedCred,
         location: newLocation.trim(),
         tags: newTags.split(',').map(t => t.trim()).filter(Boolean),
         description: newDescription.trim(),
@@ -122,9 +134,32 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
       // Reset form
       setNewHostname('');
       setNewIp('');
+      setNewCredentialsId('');
       setNewDescription('');
     } catch (err: any) {
       setFormError(err.message || 'Failed to add device');
+    }
+  };
+
+  const handleOpenDeviceDetails = (dev: Device) => {
+    setSelectedDevice(dev);
+    setReassignCredId(dev.credentials_id || (credentials[0]?.id ?? 'cred-1'));
+    setReassignSuccess('');
+  };
+
+  const handleReassignCredential = async () => {
+    if (!selectedDevice || !reassignCredId) return;
+    setIsReassigning(true);
+    setReassignSuccess('');
+    try {
+      await onUpdateDevice(selectedDevice.id, { credentials_id: reassignCredId });
+      setSelectedDevice(prev => prev ? { ...prev, credentials_id: reassignCredId } : null);
+      setReassignSuccess('Perfil de credencial actualizado correctamente');
+      setTimeout(() => setReassignSuccess(''), 3000);
+    } catch (err: any) {
+      alert(err.message || 'Error al reasignar credencial');
+    } finally {
+      setIsReassigning(false);
     }
   };
 
@@ -234,6 +269,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
             <tbody className="divide-y divide-slate-850">
               {filteredDevices.map((dev) => {
                 const ping = pingResult[dev.id];
+                const assignedCred = credentials.find(c => c.id === dev.credentials_id);
                 return (
                   <tr 
                     key={dev.id} 
@@ -241,7 +277,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
                   >
                     {/* Hostname & Management IP */}
                     <td className="py-3.5 px-4">
-                      <div className="font-mono font-semibold text-white group-hover:text-cyan-400 transition-colors cursor-pointer" onClick={() => setSelectedDevice(dev)}>
+                      <div className="font-mono font-semibold text-white group-hover:text-cyan-400 transition-colors cursor-pointer" onClick={() => handleOpenDeviceDetails(dev)}>
                         {dev.hostname}
                       </div>
                       <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5 mt-0.5">
@@ -274,6 +310,16 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
                         )}
                       </div>
                       <div className="text-[11px] text-slate-500 tabular-nums">Port {dev.port}</div>
+                      {assignedCred && (
+                        <div 
+                          onClick={() => handleOpenDeviceDetails(dev)}
+                          className="text-[11px] text-cyan-400/90 hover:text-cyan-300 flex items-center gap-1 mt-1 font-sans cursor-pointer transition-colors"
+                          title={`Credencial de Vault: ${assignedCred.name} (${assignedCred.username}) - Click para reasignar`}
+                        >
+                          <Key className="w-3 h-3 text-cyan-400 shrink-0" />
+                          <span className="truncate max-w-[130px]">{assignedCred.name}</span>
+                        </div>
+                      )}
                     </td>
 
                     {/* Location & Tags (Zero-Pill Discipline: unboxed clean text) */}
@@ -431,6 +477,72 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
               </div>
             </div>
 
+            {/* Assigned Vault Credential & Reassignment */}
+            {(() => {
+              const currentAssignedCred = credentials.find(c => c.id === selectedDevice.credentials_id);
+              return (
+                <div className="my-3 p-3 bg-slate-950/70 border border-slate-800 rounded-lg text-xs">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5 text-cyan-400 font-semibold">
+                      <Key className="w-3.5 h-3.5" />
+                      <span>Perfil de Credencial Asignado en Vault (SSH/Telnet)</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      ID: {selectedDevice.credentials_id || 'cred-1'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 p-2.5 rounded border border-slate-800/80">
+                    <div>
+                      <div className="text-white font-medium flex items-center gap-2">
+                        <span>{currentAssignedCred ? currentAssignedCred.name : 'Credencial Estándar'}</span>
+                        <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/80 border border-cyan-800/50 px-1.5 py-0.5 rounded">
+                          {currentAssignedCred?.auth_type === 'ssh_key' ? 'SSH Key' : 'Password'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                        Usuario remoto: <span className="text-slate-200">{currentAssignedCred?.username || 'admin'}</span>
+                        {currentAssignedCred?.has_enable_secret && (
+                          <span className="text-emerald-400 ml-2">✓ Enable Secret Activo</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {(currentUser.role === 'admin' || currentUser.role === 'net_engineer') && credentials.length > 0 && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <select
+                          value={reassignCredId}
+                          onChange={(e) => setReassignCredId(e.target.value)}
+                          className="bg-slate-950 border border-slate-700 text-slate-200 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
+                        >
+                          {credentials.map(c => (
+                            <option key={c.id} value={c.id}>
+                              {c.name} ({c.username})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={isReassigning || reassignCredId === selectedDevice.credentials_id}
+                          onClick={handleReassignCredential}
+                          className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium rounded text-xs transition-colors shrink-0"
+                        >
+                          {isReassigning ? 'Guardando...' : 'Reasignar'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {reassignSuccess && (
+                    <div className="mt-2 text-emerald-400 text-[11px] font-medium flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      {reassignSuccess}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
               <button
                 onClick={() => setSelectedDevice(null)}
@@ -582,6 +694,32 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
                   />
                 </div>
+              </div>
+
+              {/* Vault Credentials Selection */}
+              <div>
+                <label className="block text-slate-400 mb-1 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Perfil de Credencial del Vault (SSH / Telnet) *</span>
+                </label>
+                <select
+                  value={newCredentialsId || (credentials[0]?.id ?? '')}
+                  onChange={(e) => setNewCredentialsId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-sans"
+                >
+                  {credentials.length > 0 ? (
+                    credentials.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} — Usuario: {c.username} ({c.auth_type === 'ssh_key' ? 'SSH Key' : 'Contraseña'})
+                      </option>
+                    ))
+                  ) : (
+                    <option value="cred-1">Perfil Principal (TACACS+ / admin_net)</option>
+                  )}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  El gateway utilizará las claves cifradas en AES-256 de este perfil al abrir la sesión PTY en el navegador.
+                </p>
               </div>
 
               <div>

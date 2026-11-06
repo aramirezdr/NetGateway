@@ -29,7 +29,7 @@ function encryptSecret(plaintext: string): string {
 }
 
 // In-Memory Database Store with enterprise data
-const credentialsStore: (Credential & { encrypted_secret: string; enable_secret?: string })[] = [
+let credentialsStore: (Credential & { encrypted_secret: string; enable_secret?: string })[] = [
   {
     id: 'cred-1',
     name: 'TACACS+ Core Engineering',
@@ -672,7 +672,7 @@ app.get('/api/v1/credentials', authenticateToken, (req: Request, res: Response) 
     has_enable_secret: c.has_enable_secret,
     created_at: c.created_at,
     last_used: c.last_used,
-    device_count: c.device_count || 1,
+    device_count: devicesStore.filter(d => d.credentials_id === c.id).length,
   }));
   res.json({ credentials: safeCreds });
 });
@@ -723,6 +723,79 @@ app.post('/api/v1/credentials', authenticateToken, (req: Request, res: Response)
       last_used: newCred.last_used,
     },
   });
+});
+
+app.put('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can update vault credentials' });
+  }
+
+  const idx = credentialsStore.findIndex(c => c.id === req.params.id);
+  if (idx === -1) {
+    return res.status(404).json({ error: 'Credential not found' });
+  }
+
+  const { name, username, auth_type, secret, enable_secret } = req.body;
+  const target = credentialsStore[idx];
+
+  if (name) target.name = name.trim();
+  if (username) target.username = username.trim();
+  if (auth_type) target.auth_type = auth_type;
+  if (secret && secret.trim()) {
+    target.encrypted_secret = encryptSecret(secret.trim());
+  }
+  if (enable_secret !== undefined) {
+    target.has_enable_secret = Boolean(enable_secret && enable_secret.trim());
+    target.enable_secret = enable_secret && enable_secret.trim() ? encryptSecret(enable_secret.trim()) : undefined;
+  }
+  target.last_used = new Date().toISOString();
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    user: user.username,
+    action: 'CREDENTIAL_ACCESS',
+    details: `Updated vault credential profile: "${target.name}" (username: ${target.username})`,
+    status: 'success',
+  });
+
+  res.json({
+    credential: {
+      id: target.id,
+      name: target.name,
+      username: target.username,
+      auth_type: target.auth_type,
+      has_enable_secret: target.has_enable_secret,
+      created_at: target.created_at,
+      last_used: target.last_used,
+    },
+  });
+});
+
+app.delete('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can delete vault credentials' });
+  }
+
+  const target = credentialsStore.find(c => c.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: 'Credential not found' });
+  }
+
+  credentialsStore = credentialsStore.filter(c => c.id !== req.params.id);
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    user: user.username,
+    action: 'CREDENTIAL_ACCESS',
+    details: `Deleted vault credential profile: "${target.name}"`,
+    status: 'success',
+  });
+
+  res.json({ message: 'Credential deleted successfully' });
 });
 
 // Audit Logs

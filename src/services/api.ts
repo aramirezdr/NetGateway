@@ -208,6 +208,31 @@ export async function createCredential(data: { name: string; username: string; a
   return json.credential;
 }
 
+export async function updateCredential(id: string, data: { name?: string; username?: string; auth_type?: string; secret?: string; enable_secret?: string }): Promise<Credential> {
+  const res = await fetch(`/api/v1/credentials/${id}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to update credential' }));
+    throw new Error(err.error || 'Failed to update credential');
+  }
+  const json = await res.json();
+  return json.credential;
+}
+
+export async function deleteCredential(id: string): Promise<void> {
+  const res = await fetch(`/api/v1/credentials/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to delete credential' }));
+    throw new Error(err.error || 'Failed to delete credential');
+  }
+}
+
 export async function fetchAuditLogs(action?: string): Promise<AuditLogEntry[]> {
   const params = new URLSearchParams();
   if (action && action !== 'all') params.append('action', action);

@@ -9,6 +9,8 @@ import {
   deleteDevice, 
   pingDevice,
   createCredential,
+  updateCredential,
+  deleteCredential,
   getStoredUser,
   getStoredToken,
   clearSession 
@@ -158,6 +160,16 @@ export default function App() {
     await reloadData();
   };
 
+  const handleUpdateCredential = async (id: string, data: any) => {
+    await updateCredential(id, data);
+    await reloadData();
+  };
+
+  const handleDeleteCredential = async (id: string) => {
+    await deleteCredential(id);
+    await reloadData();
+  };
+
   // If unauthenticated, show enterprise login screen
   if (!currentUser) {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
@@ -188,6 +200,7 @@ export default function App() {
             {currentView === 'inventory' && (
               <DeviceInventory
                 devices={devices}
+                credentials={credentials}
                 onLaunchTerminal={handleLaunchTerminal}
                 onAddDevice={handleAddDevice}
                 onUpdateDevice={handleUpdateDevice}
@@ -215,6 +228,8 @@ export default function App() {
                 credentials={credentials}
                 currentUser={currentUser}
                 onAddCredential={handleAddCredential}
+                onUpdateCredential={handleUpdateCredential}
+                onDeleteCredential={handleDeleteCredential}
                 refreshCredentials={reloadData}
               />
             )}

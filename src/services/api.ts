@@ -142,6 +142,19 @@ export async function createDevice(deviceData: Partial<Device>): Promise<Device>
   return data.device;
 }
 
+export async function bulkImportDevices(devices: Partial<Device>[]): Promise<{ count: number; devices: Device[]; errors?: string[] }> {
+  const res = await fetch('/api/v1/devices/bulk', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ devices }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to import devices' }));
+    throw new Error(err.error || 'Failed to import devices');
+  }
+  return await res.json();
+}
+
 export async function updateDevice(id: string, updates: Partial<Device>): Promise<Device> {
   const res = await fetch(`/api/v1/devices/${id}`, {
     method: 'PUT',

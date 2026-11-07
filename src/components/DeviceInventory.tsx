@@ -18,7 +18,14 @@ import {
   Layers,
   Filter,
   Key,
-  ShieldCheck
+  ShieldCheck,
+  Upload,
+  Download,
+  FileText,
+  FileSpreadsheet,
+  Check,
+  Info,
+  X
 } from 'lucide-react';
 
 interface DeviceInventoryProps {
@@ -26,6 +33,7 @@ interface DeviceInventoryProps {
   credentials?: Credential[];
   onLaunchTerminal: (device: Device) => void;
   onAddDevice: (deviceData: Partial<Device>) => Promise<void>;
+  onBulkImportDevices?: (devices: Partial<Device>[]) => Promise<{ count: number; devices: Device[]; errors?: string[] }>;
   onUpdateDevice: (id: string, updates: Partial<Device>) => Promise<void>;
   onDeleteDevice: (id: string) => Promise<void>;
   onPingDevice: (id: string) => Promise<any>;
@@ -38,6 +46,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   credentials = [],
   onLaunchTerminal,
   onAddDevice,
+  onBulkImportDevices,
   onUpdateDevice,
   onDeleteDevice,
   onPingDevice,
@@ -74,6 +83,269 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   const [reassignCredId, setReassignCredId] = useState<string>('');
   const [isReassigning, setIsReassigning] = useState<boolean>(false);
   const [reassignSuccess, setReassignSuccess] = useState<string>('');
+
+  // Bulk Import State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkInputText, setBulkInputText] = useState('');
+  const [bulkDefaultCredId, setBulkDefaultCredId] = useState<string>(credentials[0]?.id || 'cred-1');
+  const [bulkError, setBulkError] = useState('');
+  const [isImportingBulk, setIsImportingBulk] = useState(false);
+  const [bulkSuccessMsg, setBulkSuccessMsg] = useState('');
+  const [importTab, setImportTab] = useState<'upload' | 'paste'>('upload');
+  const [dragOver, setDragOver] = useState(false);
+
+  // CSV Parsing helper
+  const parseCSVLine = (line: string, delimiter: string = ','): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === delimiter && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  interface ParsedBulkRow {
+    rawIndex: number;
+    isValid: boolean;
+    error?: string;
+    device: Partial<Device>;
+  }
+
+  const parseDevicesInput = (text: string, defaultCredId: string): ParsedBulkRow[] => {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+
+    // Check if JSON format
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed.devices) ? parsed.devices : [parsed];
+        return list.map((item: any, idx: number) => {
+          const errors: string[] = [];
+          if (!item.hostname) errors.push('Falta hostname');
+          if (!item.management_ip && !item.ip) errors.push('Falta IP');
+          if (!item.model) errors.push('Falta modelo');
+
+          const ip = String(item.management_ip || item.ip || '').trim();
+          const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$|^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$/;
+          if (ip && !ipRegex.test(ip)) {
+            errors.push('Formato IP inválido');
+          }
+
+          let vendor: VendorType = 'Cisco';
+          if (item.vendor) {
+            const v = String(item.vendor).toLowerCase();
+            if (v.includes('aruba') || v.includes('hp') || v.includes('comware')) vendor = 'HP/Aruba';
+            else if (v.includes('palo') || v.includes('pan')) vendor = 'Palo Alto';
+            else if (v.includes('opengear')) vendor = 'OpenGear';
+            else if (v.includes('cisco')) vendor = 'Cisco';
+          }
+
+          return {
+            rawIndex: idx + 1,
+            isValid: errors.length === 0,
+            error: errors.join(', '),
+            device: {
+              hostname: String(item.hostname || '').trim().toUpperCase(),
+              management_ip: ip,
+              vendor,
+              model: String(item.model || 'Catalyst 9300').trim(),
+              os_version: item.os_version || item.os || 'v1.0',
+              connection_type: (item.connection_type || item.protocol || 'SSH') as ConnectionType,
+              port: Number(item.port) || 22,
+              terminal_line: item.terminal_line ? Number(item.terminal_line) : undefined,
+              credentials_id: item.credentials_id || defaultCredId,
+              location: item.location ? String(item.location).trim() : 'Datacenter',
+              tags: Array.isArray(item.tags) ? item.tags : typeof item.tags === 'string' ? item.tags.split(',').map((t: string) => t.trim()).filter(Boolean) : ['Imported'],
+              description: item.description ? String(item.description).trim() : '',
+            }
+          };
+        });
+      } catch (err: any) {
+        return [{
+          rawIndex: 1,
+          isValid: false,
+          error: `Error JSON: ${err.message}`,
+          device: {}
+        }];
+      }
+    }
+
+    // Otherwise parse CSV format
+    const lines = trimmed.split(/\r?\n/).filter(line => line.trim().length > 0 && !line.trim().startsWith('#'));
+    if (lines.length === 0) return [];
+
+    const delimiter = lines[0].includes(';') ? ';' : ',';
+    const headerTokens = parseCSVLine(lines[0], delimiter).map(h => h.toLowerCase().replace(/[\s_-]+/g, ''));
+    
+    // Check if first line contains known headers
+    const hasHeader = headerTokens.some(h => ['hostname', 'host', 'ip', 'managementip', 'vendor', 'model'].includes(h));
+    const dataLines = hasHeader ? lines.slice(1) : lines;
+
+    const getIndex = (aliases: string[]) => {
+      if (!hasHeader) return -1;
+      return headerTokens.findIndex(h => aliases.includes(h));
+    };
+
+    const hostIdx = hasHeader ? getIndex(['hostname', 'host', 'name']) : 0;
+    const ipIdx = hasHeader ? getIndex(['managementip', 'ip', 'ipaddress']) : 1;
+    const vendorIdx = hasHeader ? getIndex(['vendor', 'manufacturer', 'brand']) : 2;
+    const modelIdx = hasHeader ? getIndex(['model', 'hardware']) : 3;
+    const osIdx = hasHeader ? getIndex(['osversion', 'os', 'firmware', 'version']) : 4;
+    const typeIdx = hasHeader ? getIndex(['connectiontype', 'protocol', 'type']) : 5;
+    const portIdx = hasHeader ? getIndex(['port']) : 6;
+    const lineIdx = hasHeader ? getIndex(['terminalline', 'line']) : 7;
+    const credIdx = hasHeader ? getIndex(['credentialsid', 'credential', 'cred']) : 8;
+    const locIdx = hasHeader ? getIndex(['location', 'site', 'rack']) : 9;
+    const tagsIdx = hasHeader ? getIndex(['tags', 'tag']) : 10;
+    const descIdx = hasHeader ? getIndex(['description', 'desc', 'notes']) : 11;
+
+    return dataLines.map((line, idx) => {
+      const tokens = parseCSVLine(line, delimiter);
+      const errors: string[] = [];
+
+      const rawHostname = (hostIdx >= 0 && hostIdx < tokens.length) ? tokens[hostIdx] : (tokens[0] || '');
+      const rawIp = (ipIdx >= 0 && ipIdx < tokens.length) ? tokens[ipIdx] : (tokens[1] || '');
+      const rawVendor = (vendorIdx >= 0 && vendorIdx < tokens.length) ? tokens[vendorIdx] : (tokens[2] || 'Cisco');
+      const rawModel = (modelIdx >= 0 && modelIdx < tokens.length) ? tokens[modelIdx] : (tokens[3] || 'Catalyst 9300');
+
+      if (!rawHostname.trim()) errors.push('Falta hostname');
+      if (!rawIp.trim()) errors.push('Falta IP');
+      if (!rawModel.trim()) errors.push('Falta modelo');
+
+      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$|^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$/;
+      if (rawIp.trim() && !ipRegex.test(rawIp.trim())) {
+        errors.push('Formato de IP inválido');
+      }
+
+      let vendor: VendorType = 'Cisco';
+      const v = rawVendor.toLowerCase();
+      if (v.includes('aruba') || v.includes('hp') || v.includes('comware')) vendor = 'HP/Aruba';
+      else if (v.includes('palo') || v.includes('pan')) vendor = 'Palo Alto';
+      else if (v.includes('opengear')) vendor = 'OpenGear';
+      else if (v.includes('cisco')) vendor = 'Cisco';
+
+      const rawType = (typeIdx >= 0 && typeIdx < tokens.length && tokens[typeIdx]) ? tokens[typeIdx] : 'SSH';
+      let connType: ConnectionType = 'SSH';
+      if (rawType.toLowerCase().includes('telnet')) connType = 'Telnet';
+      else if (rawType.toLowerCase().includes('terminal') || rawType.toLowerCase().includes('serial')) connType = 'Terminal Server';
+
+      const port = (portIdx >= 0 && portIdx < tokens.length && tokens[portIdx]) ? Number(tokens[portIdx]) : (connType === 'Telnet' ? 23 : connType === 'Terminal Server' ? 2001 : 22);
+      const termLine = (lineIdx >= 0 && lineIdx < tokens.length && tokens[lineIdx]) ? Number(tokens[lineIdx]) : undefined;
+      const credId = (credIdx >= 0 && credIdx < tokens.length && tokens[credIdx].trim()) ? tokens[credIdx].trim() : defaultCredId;
+      const location = (locIdx >= 0 && locIdx < tokens.length && tokens[locIdx].trim()) ? tokens[locIdx].trim() : 'Datacenter';
+      const tags = (tagsIdx >= 0 && tagsIdx < tokens.length && tokens[tagsIdx].trim()) ? tokens[tagsIdx].split(',').map(t => t.trim()).filter(Boolean) : ['Imported'];
+      const description = (descIdx >= 0 && descIdx < tokens.length && tokens[descIdx].trim()) ? tokens[descIdx].trim() : '';
+      const osVersion = (osIdx >= 0 && osIdx < tokens.length && tokens[osIdx].trim()) ? tokens[osIdx].trim() : 'v1.0';
+
+      return {
+        rawIndex: idx + (hasHeader ? 2 : 1),
+        isValid: errors.length === 0,
+        error: errors.join(', '),
+        device: {
+          hostname: rawHostname.trim().toUpperCase(),
+          management_ip: rawIp.trim(),
+          vendor,
+          model: rawModel.trim(),
+          os_version: osVersion,
+          connection_type: connType,
+          port: isNaN(port) ? 22 : port,
+          terminal_line: termLine && !isNaN(termLine) ? termLine : undefined,
+          credentials_id: credId,
+          location,
+          tags,
+          description,
+        }
+      };
+    });
+  };
+
+  const handleDownloadCSVTemplate = () => {
+    const csvContent = [
+      'hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description',
+      'US-WEST-CORE-R02,10.240.20.1,Cisco,Catalyst 9500-48Y4C,IOS-XE 17.9.4,SSH,22,,cred-1,DC-Ashburn-Rack02,"Core, BGP",Primary Core Router',
+      'US-EAST-FW-01,10.240.0.253,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-Ashburn-Rack01,"Perimeter, IPS",Edge Firewall Cluster',
+      'US-CAMPUS-SW01,10.100.20.10,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Campus-BldgA-IDF1,"Distribution, VLAN",Campus Aggregation',
+      'CONSOLE-POD-01,10.240.254.20,OpenGear,IM7216,v4.12,Terminal Server,2001,1,cred-4,DC-Ashburn-Console,"OOB, Serial",Console Terminal Server'
+    ].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'netgateway_devices_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleDownloadJSONTemplate = () => {
+    const jsonContent = JSON.stringify([
+      {
+        hostname: "US-WEST-CORE-R02",
+        management_ip: "10.240.20.1",
+        vendor: "Cisco",
+        model: "Catalyst 9500-48Y4C",
+        os_version: "IOS-XE 17.9.4",
+        connection_type: "SSH",
+        port: 22,
+        credentials_id: "cred-1",
+        location: "DC-Ashburn-Rack02",
+        tags: ["Core", "BGP"],
+        description: "Primary Core Router"
+      },
+      {
+        hostname: "US-EAST-FW-01",
+        management_ip: "10.240.0.253",
+        vendor: "Palo Alto",
+        model: "PA-5220",
+        os_version: "PAN-OS 11.0.2",
+        connection_type: "SSH",
+        port: 22,
+        credentials_id: "cred-2",
+        location: "DC-Ashburn-Rack01",
+        tags: ["Perimeter", "IPS"],
+        description: "Edge Firewall Cluster"
+      }
+    ], null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'netgateway_devices_template.json');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleLoadSampleData = () => {
+    setBulkInputText(`hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description
+US-WEST-DIST-01,10.240.30.1,Cisco,Catalyst 9300-48UXM,IOS-XE 17.9.4,SSH,22,,cred-1,DC-West-Rack03,"Distribution, Access",West Distribution Switch
+US-CORE-FW-02,10.240.0.254,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-East-Rack01,"Perimeter, BGP",Secondary Edge Firewall
+BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Branch-Office-02,"Campus, PoE",Branch Access Switch`);
+    setImportTab('paste');
+  };
+
+  const handleFileUpload = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      if (content) {
+        setBulkInputText(content);
+        setImportTab('paste');
+      }
+    };
+    reader.readAsText(file);
+  };
 
   // Filtering
   const filteredDevices = devices.filter((d) => {
@@ -185,13 +457,28 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
           </button>
 
           {currentUser.role !== 'auditor' && (
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg shadow-sm shadow-cyan-600/30 transition-all whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" />
-              Add Network Device
-            </button>
+            <>
+              <button
+                onClick={() => {
+                  setShowBulkModal(true);
+                  setBulkError('');
+                  setBulkSuccessMsg('');
+                }}
+                className="flex items-center gap-2 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 text-slate-200 hover:text-white text-xs font-semibold rounded-lg shadow-sm transition-all whitespace-nowrap"
+                title="Importar múltiples dispositivos mediante CSV o JSON"
+              >
+                <Upload className="w-4 h-4 text-cyan-400" />
+                Bulk Import (CSV / JSON)
+              </button>
+
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg shadow-sm shadow-cyan-600/30 transition-all whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" />
+                Add Network Device
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -749,6 +1036,326 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Import Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-4xl w-full p-6 text-slate-200 shadow-2xl flex flex-col max-h-[92vh]">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-700/50 flex items-center justify-center text-cyan-400">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Importación Masiva de Equipos (Bulk Import)</h3>
+                  <p className="text-xs text-slate-400">Importa múltiples routers, switches y firewalls desde archivos CSV o JSON.</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBulkModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body with Scroll */}
+            <div className="overflow-y-auto flex-1 py-4 pr-1 space-y-4 text-xs">
+              {/* Success / Error alerts */}
+              {bulkSuccessMsg && (
+                <div className="p-3 bg-emerald-950/60 border border-emerald-800 rounded text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{bulkSuccessMsg}</span>
+                </div>
+              )}
+
+              {bulkError && (
+                <div className="p-3 bg-rose-950/60 border border-rose-800 rounded text-rose-300 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{bulkError}</span>
+                </div>
+              )}
+
+              {/* Mode Selector and Template Downloaders */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-950/60 border border-slate-800 rounded-lg">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setImportTab('upload')}
+                    className={`px-3 py-1.5 rounded font-medium transition-colors ${
+                      importTab === 'upload' ? 'bg-cyan-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Subir Archivo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportTab('paste')}
+                    className={`px-3 py-1.5 rounded font-medium transition-colors ${
+                      importTab === 'paste' ? 'bg-cyan-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Editor / Pegar Texto
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadCSVTemplate}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors"
+                    title="Descargar plantilla CSV compatible con Excel y LibreOffice"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Descargar Plantilla CSV</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDownloadJSONTemplate}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 border border-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors"
+                    title="Descargar esquema de ejemplo en JSON"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Ejemplo JSON</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleData}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/80 border border-cyan-800/60 text-cyan-300 rounded text-xs transition-colors font-medium"
+                  >
+                    <span>⚡ Cargar Datos Demo</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Upload Drop Zone Tab */}
+              {importTab === 'upload' && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOver(true);
+                  }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const files = e.dataTransfer.files;
+                    if (files && files.length > 0) {
+                      handleFileUpload(files[0]);
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-lg p-6 text-center transition-all cursor-pointer ${
+                    dragOver
+                      ? 'border-cyan-500 bg-cyan-950/20'
+                      : 'border-slate-800 hover:border-slate-700 bg-slate-950/40'
+                  }`}
+                  onClick={() => {
+                    const input = document.getElementById('bulk-file-input');
+                    if (input) input.click();
+                  }}
+                >
+                  <input
+                    id="bulk-file-input"
+                    type="file"
+                    accept=".csv,.json,text/csv,application/json"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleFileUpload(e.target.files[0]);
+                      }
+                    }}
+                  />
+                  <Upload className="w-8 h-8 text-slate-500 mx-auto mb-2" />
+                  <p className="text-white font-medium mb-1">Arrastra aquí tu archivo CSV o JSON, o haz clic para explorar</p>
+                  <p className="text-slate-400 text-[11px]">Formatos soportados: .csv (separado por comas o punto y coma) o .json (array de objetos)</p>
+                </div>
+              )}
+
+              {/* Paste / Editor Tab */}
+              {importTab === 'paste' && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5 text-slate-400">
+                    <span>Pega tus registros en formato CSV o JSON:</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {bulkInputText.split('\n').filter(Boolean).length} líneas
+                    </span>
+                  </div>
+                  <textarea
+                    rows={6}
+                    value={bulkInputText}
+                    onChange={(e) => setBulkInputText(e.target.value)}
+                    placeholder="hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description&#10;US-WEST-SW-01,10.240.30.11,Cisco,Catalyst 9300-48P,IOS-XE 17.9.4,SSH,22,,cred-1,DC-Ashburn-Rack03,&quot;Access,PoE&quot;,IDF-1 switch"
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 font-mono text-[11px] text-slate-200 focus:outline-none focus:border-cyan-500 leading-relaxed"
+                  />
+                </div>
+              )}
+
+              {/* Default Credential Fallback Selector */}
+              <div className="p-3 bg-slate-950/50 border border-slate-800 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="text-slate-300 font-medium flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Perfil de Credencial Predeterminado</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Se aplicará automáticamente a cualquier equipo que no tenga un <code className="text-cyan-400">credentials_id</code> en el archivo.
+                  </div>
+                </div>
+
+                <select
+                  value={bulkDefaultCredId}
+                  onChange={(e) => setBulkDefaultCredId(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
+                >
+                  {credentials.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.username})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Live Preview Table */}
+              {(() => {
+                const parsed = parseDevicesInput(bulkInputText, bulkDefaultCredId);
+                const validCount = parsed.filter(p => p.isValid).length;
+                const errorCount = parsed.length - validCount;
+
+                if (parsed.length === 0) return null;
+
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-semibold text-slate-200 flex items-center gap-2">
+                        <span>Previsualización y Validación</span>
+                        <span className="text-[11px] font-mono bg-slate-800 text-slate-300 px-2 py-0.5 rounded">
+                          {parsed.length} equipos detectados
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px]">
+                        <span className="text-emerald-400 font-medium">✓ {validCount} Válidos</span>
+                        {errorCount > 0 && (
+                          <span className="text-rose-400 font-medium">✕ {errorCount} con errores</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border border-slate-800 rounded-lg overflow-hidden max-h-52 overflow-y-auto bg-slate-950">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-slate-900/80 text-slate-400 sticky top-0 border-b border-slate-800">
+                          <tr>
+                            <th className="py-2 px-3">#</th>
+                            <th className="py-2 px-3">Estado</th>
+                            <th className="py-2 px-3">Hostname</th>
+                            <th className="py-2 px-3">IP Gestión</th>
+                            <th className="py-2 px-3">Fabricante &amp; Modelo</th>
+                            <th className="py-2 px-3">Protocolo</th>
+                            <th className="py-2 px-3">Ubicación</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-850 font-mono text-[11px]">
+                          {parsed.map((row) => (
+                            <tr key={row.rawIndex} className={row.isValid ? 'hover:bg-slate-900/40' : 'bg-rose-950/20'}>
+                              <td className="py-2 px-3 text-slate-500">{row.rawIndex}</td>
+                              <td className="py-2 px-3 font-sans">
+                                {row.isValid ? (
+                                  <span className="text-emerald-400 font-medium flex items-center gap-1">
+                                    <Check className="w-3 h-3" /> Válido
+                                  </span>
+                                ) : (
+                                  <span className="text-rose-400 font-medium flex items-center gap-1" title={row.error}>
+                                    <AlertTriangle className="w-3 h-3" /> {row.error}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-white font-semibold">{row.device.hostname || '—'}</td>
+                              <td className="py-2 px-3 text-slate-300">{row.device.management_ip || '—'}</td>
+                              <td className="py-2 px-3 text-slate-300 font-sans">
+                                {row.device.vendor} · {row.device.model}
+                              </td>
+                              <td className="py-2 px-3 text-slate-400">
+                                {row.device.connection_type}:{row.device.port}
+                              </td>
+                              <td className="py-2 px-3 text-slate-400 font-sans">{row.device.location}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            {(() => {
+              const parsed = parseDevicesInput(bulkInputText, bulkDefaultCredId);
+              const validDevices = parsed.filter(p => p.isValid).map(p => p.device);
+
+              return (
+                <div className="pt-4 border-t border-slate-800 flex items-center justify-between shrink-0">
+                  <div className="text-xs text-slate-400">
+                    {validDevices.length > 0 ? (
+                      <span>Listos para registrar: <strong className="text-white">{validDevices.length}</strong> equipos</span>
+                    ) : (
+                      <span>Sube un archivo o pega contenido para previsualizar</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowBulkModal(false)}
+                      className="px-4 py-2 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={validDevices.length === 0 || isImportingBulk}
+                      onClick={async () => {
+                        if (!onBulkImportDevices || validDevices.length === 0) return;
+                        setIsImportingBulk(true);
+                        setBulkError('');
+                        setBulkSuccessMsg('');
+                        try {
+                          const res = await onBulkImportDevices(validDevices);
+                          setBulkSuccessMsg(`¡Se han importado exitosamente ${res.count} dispositivos al inventario!`);
+                          setTimeout(() => {
+                            setShowBulkModal(false);
+                            setBulkInputText('');
+                            setBulkSuccessMsg('');
+                          }, 1600);
+                        } catch (err: any) {
+                          setBulkError(err.message || 'Error en la importación masiva');
+                        } finally {
+                          setIsImportingBulk(false);
+                        }
+                      }}
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs shadow-sm shadow-cyan-600/30 flex items-center gap-1.5 transition-all"
+                    >
+                      {isImportingBulk ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Importando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Importar {validDevices.length} Equipos Validados</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

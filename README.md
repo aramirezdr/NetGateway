@@ -46,6 +46,7 @@ It bridges web clients and physical/virtual network equipment (Cisco, HP/Aruba C
 - **Zero-Pill Typographic Discipline**: Clean, high-density table interface with unboxed metadata separators (`·` and `/`) preventing visual clutter.
 - **ICMP Prober**: Live ping utility measuring round-trip time (RTT) and packet loss percentage.
 - **Credential Profile Binding**: Visual display of linked vault credentials per device with instant inline reassignment capability.
+- **Bulk Import Engine (CSV & JSON)**: Import hundreds of devices in a single batch via file upload (drag-and-drop) or direct text pasting. Includes downloadable CSV/JSON templates, real-time syntax and IP validation, and an interactive live preview table before committing.
 - **Asset Lifecycle**: Add, inspect, update, and decommission hardware with validation and audit logging.
 
 ### 3. Role-Based Access Control (RBAC) & User Management
@@ -206,6 +207,7 @@ Conecta clientes web con equipamiento de red físico y virtual (Cisco, HP/Aruba 
 - **Diseño Tipográfico Limpio (Zero-Pill)**: Interfaz de alta densidad sin recuadros innecesarios ni elementos visuales saturados, empleando separadores tipográficos limpios (`·` y `/`).
 - **Sonda ICMP Integrada**: Herramienta de ping en vivo que reporta latencia de ida y vuelta (RTT) y porcentaje de pérdida de paquetes.
 - **Enlace de Credenciales**: Indicador visual del perfil de credencial asignado por equipo y reasignación directa desde el modal de detalles.
+- **Motor de Importación Masiva (CSV y JSON)**: Importa cientos de equipos en lote mediante subida de archivos (drag-and-drop) o pegado directo. Incluye plantillas descargables en CSV/JSON, validación en tiempo real de sintaxis e IPs, y tabla de previsualización interactiva antes de registrar.
 - **Ciclo de Vida de Activos**: Registro, inspección, actualización y desmantelamiento de equipos con validación y trazabilidad.
 
 ### 3. Control de Acceso Basado en Roles (RBAC) y Gestión de Usuarios

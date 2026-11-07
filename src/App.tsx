@@ -5,6 +5,7 @@ import {
   fetchCredentials, 
   fetchAuditLogs, 
   createDevice, 
+  bulkImportDevices,
   updateDevice, 
   deleteDevice, 
   pingDevice,
@@ -145,6 +146,12 @@ export default function App() {
     await reloadData();
   };
 
+  const handleBulkImportDevices = async (deviceList: Partial<Device>[]) => {
+    const res = await bulkImportDevices(deviceList);
+    await reloadData();
+    return res;
+  };
+
   const handleUpdateDevice = async (id: string, updates: Partial<Device>) => {
     await updateDevice(id, updates);
     await reloadData();
@@ -203,6 +210,7 @@ export default function App() {
                 credentials={credentials}
                 onLaunchTerminal={handleLaunchTerminal}
                 onAddDevice={handleAddDevice}
+                onBulkImportDevices={handleBulkImportDevices}
                 onUpdateDevice={handleUpdateDevice}
                 onDeleteDevice={handleDeleteDevice}
                 onPingDevice={pingDevice}

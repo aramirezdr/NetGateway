@@ -579,6 +579,68 @@ app.post('/api/v1/devices', authenticateToken, (req: Request, res: Response) => 
   res.status(201).json({ device: newDevice });
 });
 
+app.post('/api/v1/devices/bulk', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role === 'auditor') {
+    return res.status(403).json({ error: 'Forbidden: Auditor role cannot import devices' });
+  }
+
+  const { devices } = req.body;
+  if (!Array.isArray(devices) || devices.length === 0) {
+    return res.status(400).json({ error: 'Payload must contain a non-empty "devices" array' });
+  }
+
+  const createdDevices: Device[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < devices.length; i++) {
+    const d = devices[i];
+    if (!d.hostname || !d.management_ip || !d.vendor || !d.model) {
+      errors.push(`Row ${i + 1}: Missing required fields (hostname, management_ip, vendor, model)`);
+      continue;
+    }
+
+    const newDevice: Device = {
+      id: `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      hostname: String(d.hostname).trim().toUpperCase(),
+      management_ip: String(d.management_ip).trim(),
+      vendor: d.vendor,
+      model: String(d.model).trim(),
+      os_version: d.os_version ? String(d.os_version).trim() : 'v1.0',
+      connection_type: d.connection_type || 'SSH',
+      port: Number(d.port) || 22,
+      terminal_line: d.terminal_line ? Number(d.terminal_line) : undefined,
+      credentials_id: d.credentials_id || 'cred-1',
+      location: d.location ? String(d.location).trim() : 'Main DC',
+      tags: Array.isArray(d.tags) ? d.tags : typeof d.tags === 'string' ? d.tags.split(',').map((t: string) => t.trim()).filter(Boolean) : ['Imported'],
+      status: 'online',
+      uptime: '1 day, 0 hours',
+      last_seen: new Date().toISOString(),
+      description: d.description ? String(d.description).trim() : 'Bulk imported asset',
+    };
+
+    devicesStore.unshift(newDevice);
+    createdDevices.push(newDevice);
+  }
+
+  if (createdDevices.length > 0) {
+    auditLogs.unshift({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      user: user.username,
+      action: 'DEVICE_CREATE',
+      details: `Bulk imported ${createdDevices.length} network inventory assets (${createdDevices.map(d => d.hostname).slice(0, 5).join(', ')}${createdDevices.length > 5 ? '...' : ''})`,
+      status: 'success',
+    });
+  }
+
+  res.status(201).json({
+    count: createdDevices.length,
+    devices: createdDevices,
+    errors: errors.length > 0 ? errors : undefined,
+  });
+});
+
 app.put('/api/v1/devices/:id', authenticateToken, (req: Request, res: Response) => {
   const user: User = (req as any).user;
   if (user && user.role === 'auditor') {

@@ -9,6 +9,7 @@
 [![TailwindCSS](https://img.shields.io/badge/TailwindCSS-v4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![xterm.js](https://img.shields.io/badge/xterm.js-5.3+-F34F29?logo=gnometerminal&logoColor=white)](https://xtermjs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Podman](https://img.shields.io/badge/Podman-Rootless_Ready-892CA0?logo=podman&logoColor=white)](https://podman.io/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **NetGateway** is a secure, enterprise-grade web platform for managing network infrastructure inventory and providing full, interactive browser CLI access directly to routers, switches, next-generation firewalls, and out-of-band console servers.
@@ -21,7 +22,7 @@ It bridges web clients and physical/virtual network equipment (Cisco, HP/Aruba C
 1. [Key Features](#-key-features)
 2. [Repository Structure](#-repository-structure)
 3. [Quick Start (Local Development)](#-quick-start-local-development)
-4. [Docker Deployment (Production)](#-docker-deployment-production)
+4. [Docker & Podman Deployment (Production)](#-docker--podman-deployment-production)
 5. [Initial Administrator Account & Security Hardening](#-initial-administrator-account--security-hardening)
 6. [Connecting to Real Physical / Virtual Hardware](#-connecting-to-real-physical--virtual-hardware)
 7. [Versión en Español (Documentación Secundaria)](#netgateway--inventario-de-dispositivos-de-red-y-gateway-de-terminal-web-empresarial-español)
@@ -130,10 +131,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
-## 🐳 Docker Deployment (Production)
+## 🐳 Docker & Podman Deployment (Production)
 
-To deploy NetGateway on any Linux server, Proxmox VM, or cloud instance:
+To deploy NetGateway on any Linux server, Proxmox VM, or cloud instance using OCI containers:
 
+### With Docker & Docker Compose:
 ```bash
 # 1. Create your environment configuration
 cp .env.example .env
@@ -146,9 +148,19 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+### With Podman (Rootless & Enterprise Linux):
+```bash
+# Option A: Run rootless via Podman Compose
+podman compose up -d --build
+
+# Option B: Run via native Podman CLI
+podman build -t netgateway:latest .
+podman run -d --name netgateway --restart unless-stopped -p 3000:3000 --env-file .env netgateway:latest
+```
+
 The service will be listening on port `3000` (or `443` if using Nginx reverse proxy).
 
-For detailed production instructions, systemd service setup, and VLAN network routing, see [DEPLOYMENT.md](DEPLOYMENT.md).
+For detailed production instructions, Podman Quadlet / systemd autostart, and isolated VLAN host networking, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
@@ -256,10 +268,11 @@ Abre [http://localhost:3000](http://localhost:3000) en tu navegador.
 
 ---
 
-## 🐳 Despliegue con Docker (Producción)
+## 🐳 Despliegue con Docker y Podman (Producción)
 
-Para desplegar NetGateway en cualquier servidor Linux, máquina virtual Proxmox/VMware o instancia en la nube:
+Para desplegar NetGateway en cualquier servidor Linux, máquina virtual Proxmox/VMware o instancia en la nube usando contenedores OCI:
 
+### Con Docker y Docker Compose:
 ```bash
 # 1. Crear el archivo de entorno
 cp .env.example .env
@@ -272,9 +285,19 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+### Con Podman (Rootless y Enterprise Linux / RHEL / Rocky):
+```bash
+# Opción A: Ejecutar sin privilegios root mediante Podman Compose
+podman compose up -d --build
+
+# Opción B: Ejecutar mediante el CLI nativo de Podman
+podman build -t netgateway:latest .
+podman run -d --name netgateway --restart unless-stopped -p 3000:3000 --env-file .env netgateway:latest
+```
+
 El servicio estará disponible en el puerto `3000` (o en el `443` si se utiliza el proxy inverso de Nginx).
 
-Para instrucciones detalladas sobre systemd, enrutamiento de VLANs de gestión y proxy inverso con certificados SSL, consulta [DEPLOYMENT.md](DEPLOYMENT.md).
+Para instrucciones detalladas sobre inicio automático con systemd (Podman Quadlet), enrutamiento directo en VLANs de gestión y proxy inverso con certificados SSL, consulta [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 

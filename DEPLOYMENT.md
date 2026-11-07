@@ -9,17 +9,18 @@ This guide provides step-by-step instructions for deploying **NetGateway** in yo
 ## Table of Contents
 1. [Server Prerequisites](#server-prerequisites)
 2. [Option 1: Docker & Docker Compose Deployment (Recommended)](#option-1-docker--docker-compose-deployment-recommended)
-3. [Option 2: Native Node.js & systemd Service](#option-2-native-nodejs--systemd-service)
-4. [Option 3: Nginx Reverse Proxy with SSL (HTTPS / WSS)](#option-3-nginx-reverse-proxy-with-ssl-https--wss)
-5. [Option 4: Python FastAPI Reference Backend (asyncssh)](#option-4-python-fastapi-reference-backend-asyncssh)
-6. [Verifying Connectivity with Real Network Devices](#verifying-connectivity-with-real-network-devices)
-7. [Versión en Español](#guía-de-despliegue-empresarial--netgateway-español)
+3. [Option 2: Podman Deployment (Rootless & Enterprise Linux / RHEL / Rocky)](#option-2-podman-deployment-rootless--enterprise-linux--rhel--rocky)
+4. [Option 3: Native Node.js & systemd Service](#option-3-native-nodejs--systemd-service)
+5. [Option 4: Nginx Reverse Proxy with SSL (HTTPS / WSS)](#option-4-nginx-reverse-proxy-with-ssl-https--wss)
+6. [Option 5: Python FastAPI Reference Backend (asyncssh)](#option-5-python-fastapi-reference-backend-asyncssh)
+7. [Verifying Connectivity with Real Network Devices](#verifying-connectivity-with-real-network-devices)
+8. [Versión en Español](#guía-de-despliegue-empresarial--netgateway-español)
 
 ---
 
 ## Server Prerequisites
 
-- **Operating System:** Ubuntu 22.04/24.04 LTS, Debian 12, RHEL 9, or Rocky Linux 9.
+- **Operating System:** Ubuntu 22.04/24.04 LTS, Debian 12, RHEL 8/9, Rocky Linux 9, or AlmaLinux 9.
 - **Recommended Hardware:**
   - 2 vCPU
   - 4 GB RAM
@@ -75,15 +76,88 @@ The gateway will be accessible at: `http://<YOUR_SERVER_IP>:3000`
 
 ---
 
-## Option 2: Native Node.js & systemd Service
+## Option 2: Podman Deployment (Rootless & Enterprise Linux / RHEL / Rocky)
 
-For bare-metal or VM deployments without Docker:
+Podman is an OCI-compliant, daemonless, rootless container engine natively integrated into Red Hat Enterprise Linux (RHEL 8/9), Rocky Linux, AlmaLinux, Fedora, and Debian/Ubuntu. It eliminates the security risks of running a root Docker daemon (`dockerd`) in strict enterprise environments.
+
+### 1. Run via Podman Compose
+If your system has `podman-compose` or `podman compose` installed:
+```bash
+# Build and run rootless using docker-compose.yml
+podman compose up -d --build
+
+# Verify container status and logs
+podman compose ps
+podman compose logs -f
+```
+
+### 2. Run via Native Podman CLI (Rootless Container)
+```bash
+# 1. Build the OCI container image
+podman build -t netgateway:latest .
+
+# 2. Run the container as an unprivileged user
+podman run -d \
+  --name netgateway \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  --env-file .env \
+  netgateway:latest
+
+# 3. Check logs
+podman logs -f netgateway
+```
+
+> 💡 **Direct L3 Routing to Isolated Management VLANs with Podman:**
+> To let NetGateway communicate with your management network interfaces without bridge overhead or port NAT:
+> ```bash
+> podman run -d \
+>   --name netgateway \
+>   --network host \
+>   --env-file .env \
+>   netgateway:latest
+> ```
+
+### 3. Autostart via systemd (Podman Quadlet for RHEL 9 / Rocky 9 / Fedora)
+On modern systemd systems, you can run NetGateway as a managed systemd service without Docker daemon:
+Create `~/.config/containers/systemd/netgateway.container`:
+```ini
+[Unit]
+Description=NetGateway Enterprise Web Terminal Container
+After=network-online.target
+
+[Container]
+Image=netgateway:latest
+PublishPort=3000:3000
+EnvironmentFile=%h/netgateway/.env
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+Enable and start the user service:
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now netgateway.service
+loginctl enable-linger $USER
+```
+
+---
+
+## Option 3: Native Node.js & systemd Service
+
+For bare-metal or VM deployments without containers:
 
 ### 1. Install Node.js 22 LTS
 On Ubuntu / Debian:
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs git
+```
+On RHEL 9 / Rocky Linux:
+```bash
+sudo dnf module enable -y nodejs:22
+sudo dnf install -y nodejs git
 ```
 
 ### 2. Install dependencies and compile the production build
@@ -125,13 +199,14 @@ sudo systemctl status netgateway
 
 ---
 
-## Option 3: Nginx Reverse Proxy with SSL (HTTPS / WSS)
+## Option 4: Nginx Reverse Proxy with SSL (HTTPS / WSS)
 
 In enterprise networks, interactive terminal sessions must be encrypted end-to-end via TLS (`https://` and `wss://`).
 
 1. Install Nginx:
    ```bash
-   sudo apt install -y nginx
+   sudo apt install -y nginx  # On Ubuntu/Debian
+   # OR: sudo dnf install -y nginx  # On RHEL/Rocky
    ```
 2. Copy the included `nginx.conf` file:
    ```bash
@@ -152,7 +227,7 @@ In enterprise networks, interactive terminal sessions must be encrypted end-to-e
 
 ---
 
-## Option 4: Python FastAPI Reference Backend (asyncssh)
+## Option 5: Python FastAPI Reference Backend (asyncssh)
 
 If your enterprise backend policy requires Python:
 1. Navigate to the `/backend` directory:
@@ -173,7 +248,7 @@ If your enterprise backend policy requires Python:
 
 1. Open NetGateway in your browser and log in with your administrative account (`admin` / `AdminPassword2026!`).
 2. Navigate to **`Credentials Vault`** and store your SSH keys or TACACS+/RADIUS credentials with AES-256 encryption.
-3. Click **`+ Add Network Device`**.
+3. Click **`+ Add Network Device`** (or **`Bulk Import`** to import multiple devices via CSV/JSON).
 4. Enter your real router/switch/firewall management IP (e.g., `10.240.0.1`), vendor, and select the corresponding Vault Credential profile.
 5. Click the **`Ping`** button to run an ICMP reachability test from the server to the device.
 6. Click **`Web CLI`** to open the interactive browser-based terminal session.
@@ -191,7 +266,7 @@ Esta sección detalla los pasos para desplegar **NetGateway** en tu propia infra
 
 ## Requisitos Previos del Servidor
 
-- **Sistema Operativo:** Ubuntu 22.04/24.04 LTS, Debian 12, RHEL 9 o Rocky Linux 9.
+- **Sistema Operativo:** Ubuntu 22.04/24.04 LTS, Debian 12, RHEL 8/9, Rocky Linux 9 o AlmaLinux 9.
 - **Hardware Recomendado:**
   - 2 vCPU
   - 4 GB RAM
@@ -247,9 +322,77 @@ La aplicación estará accesible en: `http://IP_DE_TU_SERVIDOR:3000`
 
 ---
 
-## Opción 2: Despliegue Nativo con Node.js y systemd
+## Opción 2: Despliegue con Podman (Rootless y Enterprise Linux / RHEL / Rocky)
 
-Si prefieres ejecutar directamente en el sistema operativo sin Docker:
+Podman es un motor de contenedores compatible con OCI, sin demonio y con ejecución sin privilegios de root (rootless), integrado nativamente en Red Hat Enterprise Linux (RHEL 8/9), Rocky Linux, AlmaLinux, Fedora y Debian/Ubuntu. Elimina el riesgo de seguridad de ejecutar demonios con privilegios de root (`dockerd`) en entornos corporativos exigentes.
+
+### 1. Ejecución con Podman Compose
+Si tu servidor dispone de `podman-compose` o `podman compose`:
+```bash
+# Construir y levantar sin root usando docker-compose.yml
+podman compose up -d --build
+
+# Verificar estado y logs
+podman compose ps
+podman compose logs -f
+```
+
+### 2. Ejecución con CLI nativo de Podman (Contenedor Rootless)
+```bash
+# 1. Construir la imagen de contenedor OCI
+podman build -t netgateway:latest .
+
+# 2. Ejecutar como usuario sin privilegios root
+podman run -d \
+  --name netgateway \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  --env-file .env \
+  netgateway:latest
+
+# 3. Ver logs en tiempo real
+podman logs -f netgateway
+```
+
+> 💡 **Enrutamiento L3 Directo a VLANs de Gestión con Podman:**
+> Para permitir que el contenedor use directamente la pila de red del host y alcance tus routers/switches sin pasar por NAT ni bridges virtuales:
+> ```bash
+> podman run -d \
+>   --name netgateway \
+>   --network host \
+>   --env-file .env \
+>   netgateway:latest
+> ```
+
+### 3. Inicio automático con systemd (Podman Quadlet para RHEL 9 / Rocky 9 / Fedora)
+En distribuciones modernas con systemd, puedes gestionar NetGateway como un servicio del sistema sin requerir demonios de Docker:
+Crea el archivo `~/.config/containers/systemd/netgateway.container`:
+```ini
+[Unit]
+Description=Contenedor NetGateway Web Terminal
+After=network-online.target
+
+[Container]
+Image=netgateway:latest
+PublishPort=3000:3000
+EnvironmentFile=%h/netgateway/.env
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+Recarga e inicia el servicio a nivel de usuario:
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now netgateway.service
+loginctl enable-linger $USER
+```
+
+---
+
+## Opción 3: Despliegue Nativo con Node.js y systemd
+
+Si prefieres ejecutar directamente en el sistema operativo sin contenedores:
 
 ### 1. Instalar Node.js 22 LTS
 En Ubuntu/Debian:
@@ -257,9 +400,16 @@ En Ubuntu/Debian:
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs git
 ```
+En RHEL 9 / Rocky Linux:
+```bash
+sudo dnf module enable -y nodejs:22
+sudo dnf install -y nodejs git
+```
 
 ### 2. Instalar dependencias y compilar el frontend
 ```bash
+sudo mkdir -p /opt/netgateway
+sudo cp -r . /opt/netgateway/
 cd /opt/netgateway
 npm install
 npm run build
@@ -295,13 +445,14 @@ sudo systemctl status netgateway
 
 ---
 
-## Opción 3: Reverse Proxy con Nginx y Certificados SSL (HTTPS/WSS)
+## Opción 4: Reverse Proxy con Nginx y Certificados SSL (HTTPS/WSS)
 
 Para entornos corporativos donde se requiere HTTPS y certificados válidos (Let's Encrypt o CA interna):
 
 1. Instala Nginx:
    ```bash
-   sudo apt install -y nginx
+   sudo apt install -y nginx  # En Ubuntu/Debian
+   # O BIEN: sudo dnf install -y nginx  # En RHEL/Rocky
    ```
 2. Copia el archivo `nginx.conf` suministrado:
    ```bash
@@ -322,7 +473,7 @@ Para entornos corporativos donde se requiere HTTPS y certificados válidos (Let'
 
 ---
 
-## Opción 4: Backend de Referencia en Python (FastAPI + asyncssh)
+## Opción 5: Backend de Referencia en Python (FastAPI + asyncssh)
 
 Si tu infraestructura corporativa exige la ejecución del backend en Python:
 1. Navega a la carpeta `/backend`:
@@ -343,7 +494,7 @@ Si tu infraestructura corporativa exige la ejecución del backend en Python:
 
 1. Inicia sesión en NetGateway con la cuenta `admin` / `AdminPassword2026!`.
 2. Ve al **`Credentials Vault`** y guarda tus claves SSH o credenciales TACACS+/RADIUS con cifrado AES-256.
-3. Ve a **`+ Add Network Device`**.
+3. Ve a **`+ Add Network Device`** (o **`Bulk Import`** para importar múltiples equipos desde CSV/JSON).
 4. Ingresa la IP de gestión de tu switch o router real (ej: `10.240.0.1`), fabricante y selecciona el perfil de credencial correspondiente.
 5. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
 6. Haz clic en **`Web CLI`** para abrir la consola SSH interactiva directamente en tu navegador.

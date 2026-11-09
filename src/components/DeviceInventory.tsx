@@ -79,6 +79,25 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   const [newDescription, setNewDescription] = useState('');
   const [formError, setFormError] = useState('');
 
+  // Edit Device State
+  const [editingDevice, setEditingDevice] = useState<Device | null>(null);
+  const [editHostname, setEditHostname] = useState('');
+  const [editIp, setEditIp] = useState('');
+  const [editVendor, setEditVendor] = useState<VendorType>('Cisco');
+  const [editModel, setEditModel] = useState('');
+  const [editOsVersion, setEditOsVersion] = useState('');
+  const [editConnectionType, setEditConnectionType] = useState<ConnectionType>('SSH');
+  const [editPort, setEditPort] = useState('22');
+  const [editTerminalLine, setEditTerminalLine] = useState('');
+  const [editCredentialsId, setEditCredentialsId] = useState<string>('');
+  const [editLocation, setEditLocation] = useState('');
+  const [editTags, setEditTags] = useState('');
+  const [editStatus, setEditStatus] = useState<Device['status']>('online');
+  const [editDescription, setEditDescription] = useState('');
+  const [editError, setEditError] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editSuccessMsg, setEditSuccessMsg] = useState('');
+
   // Reassignment state in details modal
   const [reassignCredId, setReassignCredId] = useState<string>('');
   const [isReassigning, setIsReassigning] = useState<boolean>(false);
@@ -413,6 +432,77 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
     }
   };
 
+  const handleStartEditDevice = (dev: Device) => {
+    setEditingDevice(dev);
+    setEditHostname(dev.hostname);
+    setEditIp(dev.management_ip);
+    setEditVendor(dev.vendor);
+    setEditModel(dev.model);
+    setEditOsVersion(dev.os_version || '');
+    setEditConnectionType(dev.connection_type || 'SSH');
+    setEditPort(String(dev.port || (dev.connection_type === 'Telnet' ? 23 : dev.connection_type === 'Terminal Server' ? 2001 : 22)));
+    setEditTerminalLine(dev.terminal_line ? String(dev.terminal_line) : '');
+    setEditCredentialsId(dev.credentials_id || credentials[0]?.id || 'cred-1');
+    setEditLocation(dev.location || '');
+    setEditTags(Array.isArray(dev.tags) ? dev.tags.join(', ') : '');
+    setEditStatus(dev.status || 'online');
+    setEditDescription(dev.description || '');
+    setEditError('');
+    setEditSuccessMsg('');
+  };
+
+  const handleEditDeviceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDevice) return;
+    setEditError('');
+
+    if (!editHostname.trim() || !editIp.trim() || !editModel.trim()) {
+      setEditError('Hostname, IP de gestión y Modelo son campos obligatorios.');
+      return;
+    }
+
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$|^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$/;
+    if (!ipRegex.test(editIp.trim())) {
+      setEditError('Formato de IP de gestión inválido (ej. 10.240.20.1).');
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const updates: Partial<Device> = {
+        hostname: editHostname.trim().toUpperCase(),
+        management_ip: editIp.trim(),
+        vendor: editVendor,
+        model: editModel.trim(),
+        os_version: editOsVersion.trim() || 'v1.0',
+        connection_type: editConnectionType,
+        port: Number(editPort) || (editConnectionType === 'Telnet' ? 23 : editConnectionType === 'Terminal Server' ? 2001 : 22),
+        terminal_line: editTerminalLine ? Number(editTerminalLine) : undefined,
+        credentials_id: editCredentialsId || credentials[0]?.id || 'cred-1',
+        location: editLocation.trim() || 'Datacenter',
+        tags: editTags ? editTags.split(',').map(t => t.trim()).filter(Boolean) : ['Production'],
+        status: editStatus,
+        description: editDescription.trim(),
+      };
+
+      await onUpdateDevice(editingDevice.id, updates);
+
+      if (selectedDevice && selectedDevice.id === editingDevice.id) {
+        setSelectedDevice(prev => prev ? { ...prev, ...updates } : null);
+      }
+
+      setEditSuccessMsg('Parámetros actualizados exitosamente');
+      setTimeout(() => {
+        setEditingDevice(null);
+        setEditSuccessMsg('');
+      }, 600);
+    } catch (err: any) {
+      setEditError(err.message || 'Error al actualizar el dispositivo');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const handleOpenDeviceDetails = (dev: Device) => {
     setSelectedDevice(dev);
     setReassignCredId(dev.credentials_id || (credentials[0]?.id ?? 'cred-1'));
@@ -677,6 +767,17 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                           <span>Web CLI</span>
                         </button>
 
+                        {/* Edit Device Parameters */}
+                        {currentUser.role !== 'auditor' && (
+                          <button
+                            onClick={() => handleStartEditDevice(dev)}
+                            className="p-1.5 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
+                            title="Editar Parámetros del Equipo"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
                         {/* Delete asset (Admin only) */}
                         {currentUser.role === 'admin' && (
                           <button
@@ -830,24 +931,41 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
               );
             })()}
 
-            <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
-              <button
-                onClick={() => setSelectedDevice(null)}
-                className="px-4 py-2 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => {
-                  const dev = selectedDevice;
-                  setSelectedDevice(null);
-                  onLaunchTerminal(dev);
-                }}
-                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-sm"
-              >
-                <Terminal className="w-4 h-4" />
-                Launch Terminal Gateway
-              </button>
+            <div className="pt-2 flex items-center justify-between border-t border-slate-800">
+              <div>
+                {currentUser.role !== 'auditor' && (
+                  <button
+                    onClick={() => {
+                      const dev = selectedDevice;
+                      handleStartEditDevice(dev);
+                    }}
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-750 text-cyan-300 hover:text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-slate-700"
+                    title="Editar todos los parámetros del equipo"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Editar Equipo</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setSelectedDevice(null)}
+                  className="px-4 py-2 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => {
+                    const dev = selectedDevice;
+                    setSelectedDevice(null);
+                    onLaunchTerminal(dev);
+                  }}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-sm"
+                >
+                  <Terminal className="w-4 h-4" />
+                  Launch Terminal Gateway
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1033,6 +1151,254 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                   className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs shadow-sm"
                 >
                   Register Asset
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Device Modal */}
+      {editingDevice && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-xl w-full p-6 text-slate-200 shadow-2xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-950 border border-cyan-700/50 flex items-center justify-center text-cyan-400">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Editar Parámetros del Dispositivo</h3>
+                  <p className="text-xs text-slate-400 font-mono">{editingDevice.hostname} ({editingDevice.management_ip})</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingDevice(null)}
+                className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800"
+              >
+                ✕
+              </button>
+            </div>
+
+            {editError && (
+              <div className="my-3 p-3 bg-rose-950/50 border border-rose-800 rounded text-rose-300 text-xs shrink-0">
+                {editError}
+              </div>
+            )}
+
+            {editSuccessMsg && (
+              <div className="my-3 p-3 bg-emerald-950/50 border border-emerald-800 rounded text-emerald-300 text-xs flex items-center gap-2 shrink-0">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>{editSuccessMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleEditDeviceSubmit} className="space-y-4 py-4 text-xs overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Hostname *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. US-WEST-CORE-R02"
+                    value={editHostname}
+                    onChange={(e) => setEditHostname(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Management IP *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. 10.240.20.1"
+                    value={editIp}
+                    onChange={(e) => setEditIp(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Fabricante / Vendor *</label>
+                  <select
+                    value={editVendor}
+                    onChange={(e) => setEditVendor(e.target.value as VendorType)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="Cisco">Cisco Systems</option>
+                    <option value="HP/Aruba">HP / Aruba (Comware/AOS)</option>
+                    <option value="Palo Alto">Palo Alto Networks</option>
+                    <option value="Juniper">Juniper Networks</option>
+                    <option value="OpenGear">OpenGear Terminal Server</option>
+                    <option value="Linux">Linux Gateway / Bastion</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Modelo de Hardware *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Catalyst 9500-48Y4C"
+                    value={editModel}
+                    onChange={(e) => setEditModel(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">OS / Firmware</label>
+                  <input
+                    type="text"
+                    placeholder="IOS-XE 17.9.4"
+                    value={editOsVersion}
+                    onChange={(e) => setEditOsVersion(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Protocolo</label>
+                  <select
+                    value={editConnectionType}
+                    onChange={(e) => {
+                      const newType = e.target.value as ConnectionType;
+                      setEditConnectionType(newType);
+                      if (newType === 'Telnet' && editPort === '22') setEditPort('23');
+                      else if (newType === 'Terminal Server' && editPort === '22') setEditPort('2001');
+                      else if (newType === 'SSH' && (editPort === '23' || editPort === '2001')) setEditPort('22');
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="SSH">SSH</option>
+                    <option value="Telnet">Telnet</option>
+                    <option value="Terminal Server">Terminal Server (Serial)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Puerto TCP</label>
+                  <input
+                    type="number"
+                    value={editPort}
+                    onChange={(e) => setEditPort(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              {editConnectionType === 'Terminal Server' && (
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Línea de Consola / Terminal Line</label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 1"
+                    value={editTerminalLine}
+                    onChange={(e) => setEditTerminalLine(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Estado Operativo</label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value as Device['status'])}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="online">Online (Operativo)</option>
+                    <option value="warning">Warning (Alerta de telemetría)</option>
+                    <option value="unreachable">Unreachable (Inalcanzable)</option>
+                    <option value="maintenance">Maintenance (Ventana de Mantenimiento)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium">Ubicación Física / Rack</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. DC-Ashburn-Row04"
+                    value={editLocation}
+                    onChange={(e) => setEditLocation(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-medium">Etiquetas / Tags (separadas por coma)</label>
+                <input
+                  type="text"
+                  placeholder="Core, BGP, Spine"
+                  value={editTags}
+                  onChange={(e) => setEditTags(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {/* Vault Credentials Selection */}
+              <div>
+                <label className="block text-slate-400 mb-1 flex items-center gap-1.5 font-medium">
+                  <Key className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Perfil de Credencial del Vault (SSH / Telnet)</span>
+                </label>
+                <select
+                  value={editCredentialsId}
+                  onChange={(e) => setEditCredentialsId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-sans"
+                >
+                  {credentials.length > 0 ? (
+                    credentials.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} — Usuario: {c.username} ({c.auth_type === 'ssh_key' ? 'SSH Key' : 'Contraseña'})
+                      </option>
+                    ))
+                  ) : (
+                    <option value="cred-1">Perfil Principal (TACACS+ / admin_net)</option>
+                  )}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  El gateway utilizará las claves cifradas en AES-256 de este perfil al abrir la sesión PTY en el navegador.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-medium">Descripción / Notas Operativas</label>
+                <textarea
+                  rows={2}
+                  placeholder="Gateway de interconexión con BGP hacia ISP..."
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingDevice(null)}
+                  className="px-4 py-2 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold rounded-lg text-xs shadow-sm shadow-cyan-600/30 flex items-center gap-1.5 transition-colors"
+                >
+                  {isSavingEdit ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Guardar Cambios</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

@@ -1072,6 +1072,7 @@ class RealSshSession implements ITerminalSession {
   private conn: SshClient;
   private stream: any = null;
   private isClosed: boolean = false;
+  private pendingInputQueue: string[] = [];
 
   constructor(ws: WebSocket, device: Device, user: User, credential: any) {
     this.ws = ws;
@@ -1102,6 +1103,8 @@ class RealSshSession implements ITerminalSession {
     this.send(`${ANSI.gray}Auth Type:      ${ANSI.white}${credential?.auth_type === 'ssh_key' ? 'Clave Privada SSH' : 'Contraseña Cifrada'}${ANSI.reset}\r\n`);
     this.send(`${ANSI.gray}Operator:       ${ANSI.green}${this.user.name} (${this.user.role})${ANSI.reset}\r\n`);
     this.send(`${ANSI.yellow}* Estableciendo conexión SSH real con el equipo físico...${ANSI.reset}\r\n\r\n`);
+
+    console.log(`[SSH-BRIDGE CONNECTING] host=${this.device.management_ip}:${port} user=${username} auth=${credential?.auth_type || 'password'}`);
 
     const sshConfig: any = {
       host: this.device.management_ip,
@@ -1156,6 +1159,7 @@ class RealSshSession implements ITerminalSession {
 
     this.conn.on('ready', () => {
       this.send(`${ANSI.green}${ANSI.bold}✓ Conexión SSH establecida con éxito. Asignando pseudo-terminal (PTY)...\r\n${ANSI.reset}\r\n`);
+      console.log(`[SSH-BRIDGE READY] Handshake successful with ${this.device.hostname}`);
 
       auditLogs.unshift({
         id: `log-${Date.now()}`,
@@ -1173,23 +1177,46 @@ class RealSshSession implements ITerminalSession {
           term: 'xterm-256color',
           cols: 120,
           rows: 32,
+          modes: {
+            ECHO: 1,
+            IGNCR: 0,
+            INLCR: 0,
+            ICRNL: 1,
+          },
         },
         (err, stream) => {
           if (err) {
+            console.error(`[SSH-BRIDGE SHELL ERROR] ${this.device.hostname}: ${err.message}`);
             this.send(`${ANSI.red}[SSH Shell Error]: ${err.message}${ANSI.reset}\r\n`);
             this.close();
             return;
           }
 
           this.stream = stream;
+          console.log(`[SSH-BRIDGE PTY OPEN] Shell stream established for ${this.device.hostname}`);
+
+          // Flush any keystrokes sent while shell was initializing
+          while (this.pendingInputQueue.length > 0) {
+            const queued = this.pendingInputQueue.shift();
+            if (queued) {
+              const hex = Buffer.from(queued).toString('hex');
+              console.log(`[SSH-BRIDGE FLUSHED QUEUE TX -> ${this.device.hostname}] ${queued.length}B: hex=[${hex}] text=[${JSON.stringify(queued)}]`);
+              this.stream.write(queued);
+            }
+          }
 
           stream.on('data', (data: Buffer) => {
+            const hex = data.toString('hex');
+            const preview = JSON.stringify(data.toString('utf-8'));
+            console.log(`[SSH-BRIDGE RAW RX <- ${this.device.hostname}] ${data.length}B: hex=[${hex.slice(0, 60)}] text=[${preview.slice(0, 60)}]`);
+
             if (this.ws.readyState === WebSocket.OPEN) {
               this.ws.send(data.toString('utf-8'));
             }
           });
 
           stream.on('close', () => {
+            console.log(`[SSH-BRIDGE STREAM CLOSED] Remote device ${this.device.hostname} closed shell stream`);
             this.send(`\r\n${ANSI.gray}[Conexión SSH finalizada por el dispositivo remoto ${this.device.hostname}]${ANSI.reset}\r\n`);
             this.close();
           });
@@ -1198,6 +1225,7 @@ class RealSshSession implements ITerminalSession {
     });
 
     this.conn.on('error', (err: any) => {
+      console.error(`[SSH-BRIDGE ERROR] ${this.device.hostname} (${this.device.management_ip}:${port}):`, err.message);
       this.send(`\r\n${ANSI.red}${ANSI.bold}[NetGateway SSH Error]: ${err.message}${ANSI.reset}\r\n`);
       this.send(`${ANSI.yellow}Detalles de diagnóstico:\r\n`);
       this.send(`  - Host destino: ${this.device.management_ip}:${port}\r\n`);
@@ -1217,25 +1245,36 @@ class RealSshSession implements ITerminalSession {
     });
 
     this.conn.on('close', () => {
+      console.log(`[SSH-BRIDGE CONN CLOSED] Connection closed with ${this.device.hostname}`);
       this.close();
     });
 
     try {
       this.conn.connect(sshConfig);
     } catch (e: any) {
+      console.error(`[SSH-BRIDGE EXCEPTION] ${this.device.hostname}:`, e.message);
       this.send(`\r\n${ANSI.red}[SSH Client Exception]: ${e.message}${ANSI.reset}\r\n`);
     }
   }
 
   public handleData(data: string) {
-    if (this.stream && !this.isClosed) {
+    if (this.isClosed) return;
+    const hex = Buffer.from(data).toString('hex');
+    const preview = JSON.stringify(data);
+    console.log(`[SSH-BRIDGE RAW TX -> ${this.device.hostname}] ${data.length}B: hex=[${hex}] text=[${preview}]`);
+
+    if (this.stream) {
       this.stream.write(data);
+    } else {
+      console.log(`[SSH-BRIDGE QUEUING TX] Stream not ready yet for ${this.device.hostname}, queued ${data.length} bytes: ${preview}`);
+      this.pendingInputQueue.push(data);
     }
   }
 
   public resize(cols: number, rows: number) {
     if (this.stream && typeof this.stream.setWindow === 'function') {
       try {
+        console.log(`[SSH-BRIDGE RESIZE] Setting PTY size to cols=${cols}, rows=${rows}`);
         this.stream.setWindow(rows, cols, 0, 0);
       } catch (e) {}
     }

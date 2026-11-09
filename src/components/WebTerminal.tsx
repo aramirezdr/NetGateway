@@ -16,8 +16,27 @@ import {
   Activity,
   Layers,
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  Bug,
+  Code2,
+  Pause,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  Download,
+  Send,
+  Eye,
+  EyeOff
 } from 'lucide-react';
+
+export interface RawStreamEntry {
+  id: string;
+  timestamp: string; // HH:mm:ss.SSS
+  direction: 'TX' | 'RX'; // TX = Client -> SSH Bridge; RX = SSH Bridge -> Client
+  text: string;
+  hex: string;
+  byteLength: number;
+  charCodes: number[];
+}
 
 interface WebTerminalProps {
   tabs: ActiveTerminalTab[];
@@ -49,6 +68,77 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
   const [sessionDuration, setSessionDuration] = useState<string>('00:00');
   const [quickCmdInput, setQuickCmdInput] = useState('');
+
+  // Raw Stream Inspector & Packet Debugger State
+  const [showInspector, setShowInspector] = useState(false);
+  const [rawLogs, setRawLogs] = useState<RawStreamEntry[]>([]);
+  const [isPaused, setIsPaused] = useState(false);
+  const [filterDirection, setFilterDirection] = useState<'ALL' | 'TX' | 'RX'>('ALL');
+  const [viewFormat, setViewFormat] = useState<'visual' | 'hex' | 'both'>('both');
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [testCmdInput, setTestCmdInput] = useState('show version');
+  const [testEol, setTestEol] = useState<'CR' | 'CRLF' | 'LF' | 'NONE'>('CR');
+  const [logsCopied, setLogsCopied] = useState(false);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const isPausedRef = useRef(isPaused);
+  isPausedRef.current = isPaused;
+
+  const logRawStream = (direction: 'TX' | 'RX', rawData: unknown) => {
+    if (isPausedRef.current) return;
+    const text = typeof rawData === 'string' ? rawData : String(rawData ?? '');
+    if (!text) return;
+
+    const now = new Date();
+    const timeStr = `${now.toTimeString().split(' ')[0]}.${String(now.getMilliseconds()).padStart(3, '0')}`;
+    const charCodes = Array.from(text).map(c => c.charCodeAt(0));
+    const hex = charCodes.map(code => code.toString(16).padStart(2, '0')).join(' ');
+
+    const entry: RawStreamEntry = {
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      timestamp: timeStr,
+      direction,
+      text,
+      hex,
+      byteLength: text.length,
+      charCodes,
+    };
+
+    // Also output to browser DevTools console for deep debugging
+    const color = direction === 'TX' ? '#38bdf8' : '#34d399';
+    console.debug(`%c[WebTerminal ${direction}] (${text.length}B)%c ${text} | HEX: ${hex}`, `color: ${color}; font-weight: bold`, 'color: #94a3b8');
+
+    setRawLogs(prev => {
+      const next = [...prev, entry];
+      if (next.length > 500) {
+        return next.slice(next.length - 500);
+      }
+      return next;
+    });
+  };
+
+  // Auto-scroll inspector logs
+  useEffect(() => {
+    if (autoScroll && logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [rawLogs, autoScroll]);
+
+  // Re-fit xterm when inspector panel is toggled
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (fitAddonRef.current && termInstanceRef.current) {
+        fitAddonRef.current.fit();
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'resize',
+            cols: termInstanceRef.current.cols,
+            rows: termInstanceRef.current.rows,
+          }));
+        }
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [showInspector]);
 
   const currentTab = tabs.find(t => t.tabId === activeTabId);
 
@@ -199,6 +289,8 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
     };
 
     ws.onmessage = (event) => {
+      const rawText = typeof event.data === 'string' ? event.data : '';
+      logRawStream('RX', rawText);
       term.write(event.data);
     };
 
@@ -213,6 +305,7 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
 
     // Piping user keystrokes into WebSocket
     const onDataDisposable = term.onData((data) => {
+      logRawStream('TX', data);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
@@ -262,9 +355,17 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
     }
   }, [fontSize]);
 
-  const sendCommand = (cmd: string) => {
+  const sendCommand = (cmd: string, eol: 'CR' | 'CRLF' | 'LF' | 'NONE' = 'CR') => {
+    const eolMap = {
+      CR: '\r',
+      CRLF: '\r\n',
+      LF: '\n',
+      NONE: '',
+    };
+    const payload = cmd + eolMap[eol];
+    logRawStream('TX', payload);
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(cmd + '\r');
+      wsRef.current.send(payload);
     }
   };
 
@@ -488,6 +589,23 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
                 title="Reconnect session"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Raw Stream Inspector Toggle */}
+              <button
+                onClick={() => setShowInspector(!showInspector)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono transition-colors border ${
+                  showInspector
+                    ? 'bg-cyan-950/90 border-cyan-500 text-cyan-300 shadow-sm'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700'
+                }`}
+                title="Toggle Raw Stream Inspector & Line-Ending Debugger"
+              >
+                <Bug className={`w-3.5 h-3.5 ${showInspector ? 'text-cyan-400' : 'text-slate-400'}`} />
+                <span>Stream Inspector</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-900/60 text-cyan-300 border border-cyan-800/80">
+                  {rawLogs.length}
+                </span>
               </button>
             </div>
           </div>

@@ -1102,7 +1102,7 @@ class RealSshSession implements ITerminalSession {
     this.send(`${ANSI.gray}Credentials:    ${ANSI.white}${credential?.name || 'Default'} (Usuario: ${username})${ANSI.reset}\r\n`);
     this.send(`${ANSI.gray}Auth Type:      ${ANSI.white}${credential?.auth_type === 'ssh_key' ? 'Clave Privada SSH' : 'Contraseña Cifrada'}${ANSI.reset}\r\n`);
     this.send(`${ANSI.gray}Operator:       ${ANSI.green}${this.user.name} (${this.user.role})${ANSI.reset}\r\n`);
-    this.send(`${ANSI.yellow}* Estableciendo conexión SSH real con el equipo físico...${ANSI.reset}\r\n\r\n`);
+    this.send(`${ANSI.yellow}* Estableciendo conexión SSH con el equipo físico...${ANSI.reset}\r\n\r\n`);
 
     console.log(`[SSH-BRIDGE CONNECTING] host=${this.device.management_ip}:${port} user=${username} auth=${credential?.auth_type || 'password'}`);
 

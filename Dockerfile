@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Install dependencies
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --legacy-peer-deps
 
 # Copy source code and build client bundle
 COPY . .
@@ -25,7 +25,7 @@ ENV PORT=3000
 
 # Install production dependencies
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev && npm install -g tsx
+RUN npm install --omit=dev --legacy-peer-deps && npm install -g tsx
 
 # Copy built assets and server source
 COPY --from=builder /app/dist ./dist

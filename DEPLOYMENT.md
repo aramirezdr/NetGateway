@@ -81,8 +81,11 @@ The gateway will be accessible at: `http://<YOUR_SERVER_IP>:3000`
 Podman is an OCI-compliant, daemonless, rootless container engine natively integrated into Red Hat Enterprise Linux (RHEL 8/9), Rocky Linux, AlmaLinux, Fedora, and Debian/Ubuntu. It eliminates the security risks of running a root Docker daemon (`dockerd`) in strict enterprise environments.
 
 ### 1. Run via Podman Compose
-If your system has `podman-compose` or `podman compose` installed:
+When using `podman compose` on RHEL/Rocky/Fedora with the docker-compose provider, ensure the user-level Podman socket is enabled:
 ```bash
+# Enable the rootless Podman API socket (required once by docker-compose plugin)
+systemctl --user enable --now podman.socket
+
 # Build and run rootless using docker-compose.yml
 podman compose up -d --build
 
@@ -90,6 +93,13 @@ podman compose up -d --build
 podman compose ps
 podman compose logs -f
 ```
+
+> ⚠️ **Troubleshooting `podman.sock: connect: no such file or directory`:**
+> If `podman compose` fails with:
+> `failed to connect to the docker API at unix:///run/user/<UID>/podman/podman.sock`
+> This happens because the external `docker-compose` plugin requires an active Podman API socket.
+> - **Fix 1:** Run `systemctl --user enable --now podman.socket` once under your regular user.
+> - **Fix 2 (Recommended):** Use **Method 2 (Native Podman CLI)** below, which is completely daemonless and does not require any sockets or services running.
 
 ### 2. Run via Native Podman CLI (Rootless Container)
 ```bash
@@ -327,8 +337,11 @@ La aplicación estará accesible en: `http://IP_DE_TU_SERVIDOR:3000`
 Podman es un motor de contenedores compatible con OCI, sin demonio y con ejecución sin privilegios de root (rootless), integrado nativamente en Red Hat Enterprise Linux (RHEL 8/9), Rocky Linux, AlmaLinux, Fedora y Debian/Ubuntu. Elimina el riesgo de seguridad de ejecutar demonios con privilegios de root (`dockerd`) en entornos corporativos exigentes.
 
 ### 1. Ejecución con Podman Compose
-Si tu servidor dispone de `podman-compose` o `podman compose`:
+Al utilizar `podman compose` en RHEL/Rocky/Fedora con el proveedor docker-compose, asegúrate de activar el socket de Podman a nivel de usuario:
 ```bash
+# Activar el socket API rootless de Podman (requerido una sola vez por el plugin docker-compose)
+systemctl --user enable --now podman.socket
+
 # Construir y levantar sin root usando docker-compose.yml
 podman compose up -d --build
 
@@ -336,6 +349,13 @@ podman compose up -d --build
 podman compose ps
 podman compose logs -f
 ```
+
+> ⚠️ **Solución al error `podman.sock: connect: no such file or directory`:**
+> Si `podman compose` falla con:
+> `failed to connect to the docker API at unix:///run/user/<UID>/podman/podman.sock`
+> Esto ocurre porque el plugin externo `docker-compose` necesita que el socket de Podman esté activo.
+> - **Solución 1:** Ejecuta `systemctl --user enable --now podman.socket` una sola vez con tu usuario normal.
+> - **Solución 2 (Recomendada):** Usa el **Método 2 (CLI nativo de Podman)** a continuación (`podman build` y `podman run`), el cual no requiere demonios ni sockets activos.
 
 ### 2. Ejecución con CLI nativo de Podman (Contenedor Rootless)
 ```bash

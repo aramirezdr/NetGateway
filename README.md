@@ -150,13 +150,16 @@ docker compose logs -f
 
 ### With Podman (Rootless & Enterprise Linux):
 ```bash
-# Option A: Run rootless via Podman Compose
+# Option A: Run via Podman Compose (enable socket first if required by plugin)
+systemctl --user enable --now podman.socket
 podman compose up -d --build
 
-# Option B: Run via native Podman CLI
+# Option B: Run via native Podman CLI (Daemonless - No socket needed!)
 podman build -t netgateway:latest .
 podman run -d --name netgateway --restart unless-stopped -p 3000:3000 --env-file .env netgateway:latest
 ```
+
+> 💡 *If `podman compose` reports `podman.sock: connect: no such file or directory`, run `systemctl --user enable --now podman.socket` or use Option B (native CLI).*
 
 The service will be listening on port `3000` (or `443` if using Nginx reverse proxy).
 
@@ -287,13 +290,16 @@ docker compose logs -f
 
 ### Con Podman (Rootless y Enterprise Linux / RHEL / Rocky):
 ```bash
-# Opción A: Ejecutar sin privilegios root mediante Podman Compose
+# Opción A: Ejecutar con Podman Compose (activar socket previamente si lo requiere el plugin)
+systemctl --user enable --now podman.socket
 podman compose up -d --build
 
-# Opción B: Ejecutar mediante el CLI nativo de Podman
+# Opción B: Ejecutar mediante el CLI nativo de Podman (¡Sin demonios ni sockets!)
 podman build -t netgateway:latest .
 podman run -d --name netgateway --restart unless-stopped -p 3000:3000 --env-file .env netgateway:latest
 ```
+
+> 💡 *Si `podman compose` reporta `podman.sock: connect: no such file or directory`, ejecuta `systemctl --user enable --now podman.socket` o utiliza la Opción B (CLI nativo directo).*
 
 El servicio estará disponible en el puerto `3000` (o en el `443` si se utiliza el proxy inverso de Nginx).
 

@@ -23,9 +23,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Install production dependencies
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --legacy-peer-deps && npm install -g tsx
+# Reuse dependencies from builder stage (eliminates double npm install and network timeouts)
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+ENV PATH="/app/node_modules/.bin:$PATH"
 
 # Copy built assets and server source
 COPY --from=builder /app/dist ./dist

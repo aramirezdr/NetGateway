@@ -215,22 +215,37 @@ In enterprise networks, interactive terminal sessions must be encrypted end-to-e
 
 1. Install Nginx:
    ```bash
-   sudo apt install -y nginx  # On Ubuntu/Debian
-   # OR: sudo dnf install -y nginx  # On RHEL/Rocky
+   # On RHEL / Rocky Linux / AlmaLinux / CentOS:
+   sudo dnf install -y nginx
+
+   # On Ubuntu / Debian:
+   sudo apt install -y nginx
    ```
-2. Copy the included `nginx.conf` file:
+
+2. Copy the included configuration:
    ```bash
+   # On RHEL / Rocky Linux (standard conf.d directory):
+   sudo cp nginx.conf /etc/nginx/conf.d/netgateway.conf
+
+   # On Ubuntu / Debian (sites-available directory):
    sudo cp nginx.conf /etc/nginx/sites-available/netgateway.conf
    sudo ln -s /etc/nginx/sites-available/netgateway.conf /etc/nginx/sites-enabled/
    ```
-3. Edit your domain name and SSL certificate paths:
+
+3. Configure SELinux & Firewall (CRITICAL for RHEL / Rocky Linux / CentOS):
    ```bash
-   sudo nano /etc/nginx/sites-available/netgateway.conf
+   # Allow Nginx to connect to the backend container upstream on port 3000
+   sudo setsebool -P httpd_can_network_connect 1
+
+   # Open HTTP and HTTPS ports in firewalld
+   sudo firewall-cmd --permanent --add-service=http --add-service=https
+   sudo firewall-cmd --reload
    ```
-4. Test and reload Nginx:
+
+4. Test and enable Nginx:
    ```bash
    sudo nginx -t
-   sudo systemctl reload nginx
+   sudo systemctl enable --now nginx
    ```
 
 > ⚠️ **Critical for WebSocket Sessions:** The `location /api/v1/ws/` block in `nginx.conf` sets `proxy_read_timeout 86400s;` and connection upgrade headers (`Upgrade $http_upgrade;`). This ensures long-running CLI sessions do not time out during operator idle periods.
@@ -471,22 +486,37 @@ Para entornos corporativos donde se requiere HTTPS y certificados válidos (Let'
 
 1. Instala Nginx:
    ```bash
-   sudo apt install -y nginx  # En Ubuntu/Debian
-   # O BIEN: sudo dnf install -y nginx  # En RHEL/Rocky
+   # En RHEL / Rocky Linux / AlmaLinux / CentOS:
+   sudo dnf install -y nginx
+
+   # En Ubuntu / Debian:
+   sudo apt install -y nginx
    ```
+
 2. Copia el archivo `nginx.conf` suministrado:
    ```bash
+   # En RHEL / Rocky Linux (directorio estándar conf.d):
+   sudo cp nginx.conf /etc/nginx/conf.d/netgateway.conf
+
+   # En Ubuntu / Debian (directorio sites-available):
    sudo cp nginx.conf /etc/nginx/sites-available/netgateway.conf
    sudo ln -s /etc/nginx/sites-available/netgateway.conf /etc/nginx/sites-enabled/
    ```
-3. Edita tu dominio o IP y la ruta de los certificados SSL:
+
+3. Configura SELinux y Firewall (CRÍTICO en RHEL / Rocky Linux / CentOS):
    ```bash
-   sudo nano /etc/nginx/sites-available/netgateway.conf
+   # Permite que Nginx se conecte al contenedor de NetGateway en el puerto 3000
+   sudo setsebool -P httpd_can_network_connect 1
+
+   # Abre los puertos HTTP y HTTPS en el firewall
+   sudo firewall-cmd --permanent --add-service=http --add-service=https
+   sudo firewall-cmd --reload
    ```
-4. Prueba y recarga Nginx:
+
+4. Prueba y habilita Nginx:
    ```bash
    sudo nginx -t
-   sudo systemctl reload nginx
+   sudo systemctl enable --now nginx
    ```
 
 > ⚠️ **Importante para WebSockets:** El bloque `location /api/v1/ws/` en `nginx.conf` incluye `proxy_read_timeout 86400s;` y cabeceras `Upgrade $http_upgrade;`. Esto garantiza que las sesiones de terminal SSH no se corten por inactividad.

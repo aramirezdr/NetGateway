@@ -1,11 +1,14 @@
 import express, { Request, Response } from 'express';
 import http from 'http';
+import net from 'net';
+import { execFile } from 'child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
+import { Client as SshClient } from 'ssh2';
 import type { Device, Credential, AuditLogEntry, User, UserRole } from './src/types/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +29,24 @@ function encryptSecret(plaintext: string): string {
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+// Helper to decrypt secrets at rest
+function decryptSecret(encryptedStr: string): string {
+  if (!encryptedStr) return '';
+  try {
+    const parts = encryptedStr.split(':');
+    if (parts.length !== 3) return encryptedStr;
+    const iv = Buffer.from(parts[0], 'hex');
+    const tag = Buffer.from(parts[1], 'hex');
+    const encryptedText = Buffer.from(parts[2], 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', AES_KEY, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(encryptedText), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch (e) {
+    return encryptedStr;
+  }
 }
 
 // In-Memory Database Store with enterprise data
@@ -699,27 +720,114 @@ app.delete('/api/v1/devices/:id', authenticateToken, (req: Request, res: Respons
   res.json({ message: 'Device deleted successfully' });
 });
 
-// Ping / Connectivity Check
+// Real ICMP / TCP Connectivity Prober
 app.post('/api/v1/devices/:id/ping', authenticateToken, (req: Request, res: Response) => {
   const dev = devicesStore.find(d => d.id === req.params.id);
   if (!dev) {
     return res.status(404).json({ error: 'Device not found' });
   }
 
-  // Simulate realistic network latency with slight jitter
-  const baseLatency = dev.vendor === 'Cisco' ? 1.4 : dev.vendor === 'Palo Alto' ? 2.1 : 0.8;
-  const rtt = +(baseLatency + Math.random() * 0.9).toFixed(2);
-  const packetLoss = dev.status === 'unreachable' ? 100 : dev.status === 'warning' ? 20 : 0;
+  const isDemoDevice = ['dev-cisco-core-01', 'dev-cisco-agg-02', 'dev-hp-edge-03', 'dev-pa-perimeter-04', 'dev-console-server-01'].includes(dev.id);
 
-  res.json({
-    hostname: dev.hostname,
-    management_ip: dev.management_ip,
-    status: packetLoss === 100 ? 'unreachable' : 'online',
-    transmitted: 5,
-    received: packetLoss === 100 ? 0 : packetLoss === 20 ? 4 : 5,
-    packet_loss_percent: packetLoss,
-    rtt_ms: rtt,
-    prober_timestamp: new Date().toISOString(),
+  // For real user devices, execute real OS ping
+  execFile('ping', ['-c', '3', '-W', '2', dev.management_ip], (err, stdout) => {
+    if (!err && stdout) {
+      const lossMatch = stdout.match(/(\d+)% packet loss/);
+      const rttMatch = stdout.match(/rtt min\/avg\/max\/mdev = [\d.]+\/([\d.]+)\//);
+      const loss = lossMatch ? Number(lossMatch[1]) : 0;
+      const rtt = rttMatch ? Number(rttMatch[1]) : 1.2;
+
+      return res.json({
+        hostname: dev.hostname,
+        management_ip: dev.management_ip,
+        status: loss === 100 ? 'unreachable' : loss > 0 ? 'warning' : 'online',
+        transmitted: 3,
+        received: 3 - Math.round(3 * (loss / 100)),
+        packet_loss_percent: loss,
+        rtt_ms: rtt,
+        probe_type: 'ICMP Echo',
+        prober_timestamp: new Date().toISOString(),
+      });
+    }
+
+    // If ICMP is blocked or filtered by firewall, attempt direct TCP probe on device port (e.g. 22)
+    const targetPort = Number(dev.port) || (dev.connection_type === 'Telnet' ? 23 : dev.connection_type === 'Terminal Server' ? 2001 : 22);
+    const sock = new net.Socket();
+    sock.setTimeout(1800);
+    const start = Date.now();
+
+    sock.connect(targetPort, dev.management_ip, () => {
+      const rtt = Date.now() - start;
+      sock.destroy();
+      return res.json({
+        hostname: dev.hostname,
+        management_ip: dev.management_ip,
+        status: 'online',
+        transmitted: 1,
+        received: 1,
+        packet_loss_percent: 0,
+        rtt_ms: rtt,
+        probe_type: `TCP Port ${targetPort} SYN`,
+        prober_timestamp: new Date().toISOString(),
+      });
+    });
+
+    sock.on('error', () => {
+      sock.destroy();
+      if (isDemoDevice) {
+        // Fallback simulation for offline built-in demo items
+        return res.json({
+          hostname: dev.hostname,
+          management_ip: dev.management_ip,
+          status: 'online',
+          transmitted: 3,
+          received: 3,
+          packet_loss_percent: 0,
+          rtt_ms: 1.4,
+          probe_type: 'Simulated Demo Prober',
+          prober_timestamp: new Date().toISOString(),
+        });
+      }
+      return res.json({
+        hostname: dev.hostname,
+        management_ip: dev.management_ip,
+        status: 'unreachable',
+        transmitted: 3,
+        received: 0,
+        packet_loss_percent: 100,
+        rtt_ms: 0,
+        probe_type: 'ICMP/TCP (Host unreachable or filtered)',
+        prober_timestamp: new Date().toISOString(),
+      });
+    });
+
+    sock.on('timeout', () => {
+      sock.destroy();
+      if (isDemoDevice) {
+        return res.json({
+          hostname: dev.hostname,
+          management_ip: dev.management_ip,
+          status: 'online',
+          transmitted: 3,
+          received: 3,
+          packet_loss_percent: 0,
+          rtt_ms: 1.4,
+          probe_type: 'Simulated Demo Prober',
+          prober_timestamp: new Date().toISOString(),
+        });
+      }
+      return res.json({
+        hostname: dev.hostname,
+        management_ip: dev.management_ip,
+        status: 'unreachable',
+        transmitted: 3,
+        received: 0,
+        packet_loss_percent: 100,
+        rtt_ms: 0,
+        probe_type: 'Timeout',
+        prober_timestamp: new Date().toISOString(),
+      });
+    });
   });
 });
 
@@ -949,8 +1057,280 @@ const ANSI = {
   clearScreen: '\x1b[2J\x1b[H',
 };
 
-// Network OS Emulation State Machine for each interactive session
-class DeviceCliSession {
+// Generic Terminal Session Interface
+interface ITerminalSession {
+  handleData: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  close: () => void;
+}
+
+// ---------------- REAL SSH2 CLIENT TERMINAL BRIDGE ----------------
+class RealSshSession implements ITerminalSession {
+  private ws: WebSocket;
+  private device: Device;
+  private user: User;
+  private conn: SshClient;
+  private stream: any = null;
+  private isClosed: boolean = false;
+
+  constructor(ws: WebSocket, device: Device, user: User, credential: any) {
+    this.ws = ws;
+    this.device = device;
+    this.user = user;
+    this.conn = new SshClient();
+    this.connect(credential);
+  }
+
+  private send(text: string) {
+    if (!this.isClosed && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(text);
+    }
+  }
+
+  private connect(credential: any) {
+    const rawSecret = credential ? decryptSecret(credential.encrypted_secret) : '';
+    const username = credential?.username || 'admin';
+    const port = Number(this.device.port) || 22;
+
+    this.send(ANSI.clearScreen);
+    this.send(`${ANSI.cyan}${ANSI.bold}╔══════════════════════════════════════════════════════════════════════════╗${ANSI.reset}\r\n`);
+    this.send(`${ANSI.cyan}${ANSI.bold}║       NetGateway Real SSH Terminal Gateway (ssh2 Direct Bridge)          ║${ANSI.reset}\r\n`);
+    this.send(`${ANSI.cyan}${ANSI.bold}╚══════════════════════════════════════════════════════════════════════════╝${ANSI.reset}\r\n`);
+    this.send(`${ANSI.gray}Target Host:    ${ANSI.white}${this.device.hostname} (${this.device.management_ip}:${port})${ANSI.reset}\r\n`);
+    this.send(`${ANSI.gray}Vendor/Model:   ${ANSI.white}${this.device.vendor} [${this.device.model}]${ANSI.reset}\r\n`);
+    this.send(`${ANSI.gray}Credentials:    ${ANSI.white}${credential?.name || 'Default'} (Usuario: ${username})${ANSI.reset}\r\n`);
+    this.send(`${ANSI.gray}Auth Type:      ${ANSI.white}${credential?.auth_type === 'ssh_key' ? 'Clave Privada SSH' : 'Contraseña Cifrada'}${ANSI.reset}\r\n`);
+    this.send(`${ANSI.gray}Operator:       ${ANSI.green}${this.user.name} (${this.user.role})${ANSI.reset}\r\n`);
+    this.send(`${ANSI.yellow}* Estableciendo conexión SSH real con el equipo físico...${ANSI.reset}\r\n\r\n`);
+
+    const sshConfig: any = {
+      host: this.device.management_ip,
+      port: port,
+      username: username,
+      readyTimeout: 20000,
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 3,
+      algorithms: {
+        kex: [
+          'diffie-hellman-group14-sha256',
+          'diffie-hellman-group14-sha1',
+          'diffie-hellman-group-exchange-sha256',
+          'diffie-hellman-group-exchange-sha1',
+          'curve25519-sha256',
+          'curve25519-sha256@libssh.org',
+          'ecdh-sha2-nistp256',
+          'ecdh-sha2-nistp384',
+          'ecdh-sha2-nistp521',
+        ],
+        cipher: [
+          'aes128-ctr',
+          'aes192-ctr',
+          'aes256-ctr',
+          'aes128-gcm',
+          'aes256-gcm',
+          'aes128-cbc',
+          'aes256-cbc',
+          '3des-cbc',
+        ],
+        serverHostKey: [
+          'ssh-rsa',
+          'rsa-sha2-256',
+          'rsa-sha2-512',
+          'ecdsa-sha2-nistp256',
+          'ssh-ed25519',
+        ],
+        hmac: [
+          'hmac-sha2-256',
+          'hmac-sha2-512',
+          'hmac-sha1',
+          'hmac-sha1-96',
+        ],
+      },
+    };
+
+    if (credential?.auth_type === 'ssh_key') {
+      sshConfig.privateKey = rawSecret;
+    } else {
+      sshConfig.password = rawSecret;
+    }
+
+    this.conn.on('ready', () => {
+      this.send(`${ANSI.green}${ANSI.bold}✓ Conexión SSH establecida con éxito. Asignando pseudo-terminal (PTY)...\r\n${ANSI.reset}\r\n`);
+
+      auditLogs.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        user: this.user.username,
+        action: 'SESSION_START',
+        device_id: this.device.id,
+        device_hostname: this.device.hostname,
+        details: `Opened live SSH session to real hardware ${this.device.hostname} (${this.device.management_ip}:${port}) as ${username}`,
+        status: 'success',
+      });
+
+      this.conn.shell(
+        {
+          term: 'xterm-256color',
+          cols: 120,
+          rows: 32,
+        },
+        (err, stream) => {
+          if (err) {
+            this.send(`${ANSI.red}[SSH Shell Error]: ${err.message}${ANSI.reset}\r\n`);
+            this.close();
+            return;
+          }
+
+          this.stream = stream;
+
+          stream.on('data', (data: Buffer) => {
+            if (this.ws.readyState === WebSocket.OPEN) {
+              this.ws.send(data.toString('utf-8'));
+            }
+          });
+
+          stream.on('close', () => {
+            this.send(`\r\n${ANSI.gray}[Conexión SSH finalizada por el dispositivo remoto ${this.device.hostname}]${ANSI.reset}\r\n`);
+            this.close();
+          });
+        }
+      );
+    });
+
+    this.conn.on('error', (err: any) => {
+      this.send(`\r\n${ANSI.red}${ANSI.bold}[NetGateway SSH Error]: ${err.message}${ANSI.reset}\r\n`);
+      this.send(`${ANSI.yellow}Detalles de diagnóstico:\r\n`);
+      this.send(`  - Host destino: ${this.device.management_ip}:${port}\r\n`);
+      this.send(`  - Perfil de credencial: ${credential?.name || 'No configurado'} (usuario: ${username})\r\n`);
+      this.send(`  - Causa probable: El equipo no tiene SSH activo, la contraseña/llave es incorrecta o la ruta de red no es alcanzable desde el contenedor.\r\n${ANSI.reset}\r\n`);
+
+      auditLogs.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        user: this.user.username,
+        action: 'SESSION_START',
+        device_id: this.device.id,
+        device_hostname: this.device.hostname,
+        details: `Failed real SSH connection to ${this.device.hostname} (${this.device.management_ip}:${port}): ${err.message}`,
+        status: 'failed',
+      });
+    });
+
+    this.conn.on('close', () => {
+      this.close();
+    });
+
+    try {
+      this.conn.connect(sshConfig);
+    } catch (e: any) {
+      this.send(`\r\n${ANSI.red}[SSH Client Exception]: ${e.message}${ANSI.reset}\r\n`);
+    }
+  }
+
+  public handleData(data: string) {
+    if (this.stream && !this.isClosed) {
+      this.stream.write(data);
+    }
+  }
+
+  public resize(cols: number, rows: number) {
+    if (this.stream && typeof this.stream.setWindow === 'function') {
+      try {
+        this.stream.setWindow(rows, cols, 0, 0);
+      } catch (e) {}
+    }
+  }
+
+  public close() {
+    if (!this.isClosed) {
+      this.isClosed = true;
+      if (this.stream) {
+        try { this.stream.end(); } catch (e) {}
+      }
+      try { this.conn.end(); } catch (e) {}
+      try { this.ws.close(); } catch (e) {}
+
+      auditLogs.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        user: this.user.username,
+        action: 'SESSION_CLOSE',
+        device_id: this.device.id,
+        device_hostname: this.device.hostname,
+        details: `Closed real SSH session to ${this.device.hostname}`,
+        status: 'success',
+      });
+    }
+  }
+}
+
+// ---------------- REAL TCP SOCKET TERMINAL BRIDGE (Serial / Telnet) ----------------
+class RealTcpSocketSession implements ITerminalSession {
+  private ws: WebSocket;
+  private device: Device;
+  private user: User;
+  private socket: net.Socket;
+  private isClosed: boolean = false;
+
+  constructor(ws: WebSocket, device: Device, user: User, credential: any) {
+    this.ws = ws;
+    this.device = device;
+    this.user = user;
+    this.socket = new net.Socket();
+    this.connect();
+  }
+
+  private send(text: string) {
+    if (!this.isClosed && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(text);
+    }
+  }
+
+  private connect() {
+    const port = Number(this.device.port) || (this.device.connection_type === 'Telnet' ? 23 : 2001);
+
+    this.send(ANSI.clearScreen);
+    this.send(`${ANSI.cyan}${ANSI.bold}[NetGateway TCP Gateway] Conectando a ${this.device.hostname} (${this.device.management_ip}:${port})...${ANSI.reset}\r\n`);
+
+    this.socket.connect(port, this.device.management_ip, () => {
+      this.send(`${ANSI.green}[Conexión TCP activa con la consola serial/telnet]${ANSI.reset}\r\n\r\n`);
+    });
+
+    this.socket.on('data', (data: Buffer) => {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(data.toString('utf-8'));
+      }
+    });
+
+    this.socket.on('error', (err: any) => {
+      this.send(`\r\n${ANSI.red}[TCP Connection Error]: ${err.message}${ANSI.reset}\r\n`);
+    });
+
+    this.socket.on('close', () => {
+      this.send(`\r\n${ANSI.gray}[Conexión TCP cerrada]${ANSI.reset}\r\n`);
+      this.close();
+    });
+  }
+
+  public handleData(data: string) {
+    if (!this.isClosed && this.socket.writable) {
+      this.socket.write(data);
+    }
+  }
+
+  public resize(_cols: number, _rows: number) {}
+
+  public close() {
+    if (!this.isClosed) {
+      this.isClosed = true;
+      try { this.socket.destroy(); } catch (e) {}
+      try { this.ws.close(); } catch (e) {}
+    }
+  }
+}
+
+// Network OS Emulation State Machine for offline demo sessions
+class DeviceCliSession implements ITerminalSession {
   private ws: WebSocket;
   private device: Device;
   private user: User;
@@ -1367,55 +1747,70 @@ class DeviceCliSession {
   }
 
   private handleComwareCommand(cmd: string, lower: string) {
-    if (lower === 'system-view' || lower === 'sys') {
+    if (lower === 'system-view' || lower === 'sys' || lower === 'enable' || lower === 'ena' || lower === 'configure terminal' || lower === 'conf t') {
       this.promptMode = 'config';
       this.sendLine(`System View: return to User View with Ctrl+Z.`);
       this.send(this.getPrompt());
       return;
     }
-    if (lower === 'display current-configuration' || lower === 'dis cur') {
-      this.sendLine('#');
-      this.sendLine(' version 7.1.070, Release 2418P06');
-      this.sendLine(` sysname ${this.device.hostname}`);
-      this.sendLine('#');
-      this.sendLine('irf mac-address persistent timer');
-      this.sendLine('irf auto-update enable');
-      this.sendLine('#');
-      this.sendLine('vlan 1');
-      this.sendLine('vlan 10');
-      this.sendLine(' description User-Workstations');
-      this.sendLine('vlan 20');
-      this.sendLine(' description IP-Telephony');
-      this.sendLine('#');
-      this.sendLine('interface GigabitEthernet1/0/1');
-      this.sendLine(' port link-type access');
-      this.sendLine(' port default vlan 10');
-      this.sendLine(' poe enable');
-      this.sendLine('#');
-      this.sendLine('return');
-      this.send(this.getPrompt());
-      return;
-    }
-    if (lower === 'display ip interface brief' || lower === 'dis ip int br') {
-      this.sendLine('*down: administratively down');
-      this.sendLine('(s): spoofing  (l): loopback');
-      this.sendLine('Interface                Physical Protocol IP Address      Description ');
-      this.sendLine('GE1/0/1                  UP       UP       10.100.20.5     Uplink-Core-Trunk');
-      this.sendLine('GE1/0/2                  UP       UP       unassigned      Access-Port-02');
-      this.sendLine('Vlan-interface10         UP       UP       10.100.10.1     VLAN 10 Gateway');
-      this.send(this.getPrompt());
-      return;
-    }
-    if (lower === 'display version' || lower === 'dis ver') {
-      this.sendLine(`HPE Comware Platform Software`);
-      this.sendLine(`HPE ${this.device.model} Software Version 7.1.070`);
+    if (lower.startsWith('show version') || lower === 'sh ver' || lower === 'display version' || lower === 'dis ver') {
+      this.sendLine(`ArubaOS-CX / HPE Comware Platform Software`);
+      this.sendLine(`Hardware: ${this.device.model} (${this.device.hostname})`);
+      this.sendLine(`OS Version: ${this.device.os_version}`);
+      this.sendLine(`System Serial: ${this.device.serial_number || 'CN84HZX091'}`);
+      this.sendLine(`ROM Version: 10.04.0001`);
+      this.sendLine(`Booted: Image primary.asw`);
       this.sendLine(`Uptime is 45 weeks, 2 days, 8 hours, 12 minutes`);
       this.send(this.getPrompt());
       return;
     }
-    if (lower === 'save' || lower === 'sa') {
-      this.sendLine('The current configuration will be written to the device. Are you sure? [Y/N]: Y');
-      this.sendLine('Validating file. Please wait...');
+    if (lower.startsWith('show running-config') || lower.startsWith('show run') || lower === 'sh run' || lower === 'display current-configuration' || lower === 'dis cur') {
+      this.sendLine('#');
+      this.sendLine(`! Current configuration for ${this.device.hostname} (${this.device.model})`);
+      this.sendLine(`hostname "${this.device.hostname}"`);
+      this.sendLine('!');
+      this.sendLine('vlan 1');
+      this.sendLine('vlan 10');
+      this.sendLine('    name "DATA_LAN"');
+      this.sendLine('vlan 20');
+      this.sendLine('    name "VOIP_PHONES"');
+      this.sendLine('!');
+      this.sendLine('interface 1/1/1');
+      this.sendLine('    no shutdown');
+      this.sendLine('    vlan access 10');
+      this.sendLine('interface 1/1/48');
+      this.sendLine('    no shutdown');
+      this.sendLine('    vlan trunk native 1');
+      this.sendLine('    vlan trunk allowed all');
+      this.sendLine('!');
+      this.sendLine(`interface mgmt`);
+      this.sendLine(`    ip static ${this.device.management_ip}/24`);
+      this.sendLine('!');
+      this.sendLine('end');
+      this.send(this.getPrompt());
+      return;
+    }
+    if (lower.startsWith('show vlan') || lower === 'sh vlan' || lower === 'display vlan') {
+      this.sendLine('VLAN  Name            Status   Interfaces');
+      this.sendLine('----  --------------  -------  ---------------------------------------');
+      this.sendLine('1     DEFAULT_VLAN    up       1/1/2-1/1/47');
+      this.sendLine('10    DATA_LAN        up       1/1/1, 1/1/48');
+      this.sendLine('20    VOIP_PHONES     up       1/1/48');
+      this.send(this.getPrompt());
+      return;
+    }
+    if (lower.startsWith('show ip int') || lower.startsWith('show int brief') || lower === 'sh ip int br' || lower === 'display ip interface brief' || lower === 'dis ip int br') {
+      this.sendLine('*down: administratively down');
+      this.sendLine('Interface                Physical Protocol IP Address      Description ');
+      this.sendLine('1/1/1                    up       up       --              Access-Port-01');
+      this.sendLine('1/1/48                   up       up       --              Uplink-Core-Trunk');
+      this.sendLine(`mgmt                     up       up       ${this.device.management_ip}    OOB Management`);
+      this.send(this.getPrompt());
+      return;
+    }
+    if (lower === 'save' || lower === 'sa' || lower === 'write memory' || lower === 'wr' || lower === 'copy run start') {
+      this.sendLine('The current configuration will be written to device flash storage. Are you sure? [Y/N]: Y');
+      this.sendLine('Validating and writing file. Please wait...');
       this.sendLine('Configuration is saved to device successfully.');
       this.send(this.getPrompt());
       return;
@@ -1524,7 +1919,23 @@ class DeviceCliSession {
 // WebSocket Connection Event
 wss.on('connection', (ws: WebSocket, req: http.IncomingMessage, context: { device: Device; user: User }) => {
   const { device, user } = context;
-  const session = new DeviceCliSession(ws, device, user);
+  const credential = credentialsStore.find(c => c.id === device.credentials_id);
+
+  // Check if device is one of the built-in mock items with unrouted demo IPs (10.240.0.1)
+  const isBuiltinMockDevice = ['dev-cisco-core-01', 'dev-cisco-agg-02', 'dev-hp-edge-03', 'dev-pa-perimeter-04', 'dev-console-server-01'].includes(device.id) && device.management_ip.startsWith('10.240.');
+
+  let session: ITerminalSession;
+
+  if (device.connection_type === 'SSH' && !isBuiltinMockDevice) {
+    // REAL SSH GATEWAY TO PHYSICAL HARDWARE (using ssh2 PTY stream)
+    session = new RealSshSession(ws, device, user, credential);
+  } else if (device.connection_type === 'Terminal Server' && !isBuiltinMockDevice) {
+    // REAL TCP GATEWAY TO CONSOLE SERVER PORT
+    session = new RealTcpSocketSession(ws, device, user, credential);
+  } else {
+    // Offline simulation state machine
+    session = new DeviceCliSession(ws, device, user);
+  }
 
   ws.on('message', message => {
     try {

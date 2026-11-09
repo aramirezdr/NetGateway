@@ -289,8 +289,23 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
     };
 
     ws.onmessage = (event) => {
-      const rawText = typeof event.data === 'string' ? event.data : '';
-      logRawStream('RX', rawText);
+      const raw = event.data;
+      const str = typeof raw === 'string' ? raw : String(raw ?? '');
+      const charCodes = Array.from(str).map(c => c.charCodeAt(0));
+      const hex = charCodes.map(code => code.toString(16).padStart(2, '0')).join(' ');
+
+      // Explicit console.log capturing raw incoming buffer data and verifying \r\n newline integrity
+      console.log(`%c[WebTerminal RX RAW FROM BACKEND WS]`, 'color: #10b981; font-weight: bold;', {
+        bytes: str.length,
+        hasCR: str.includes('\r'),
+        hasLF: str.includes('\n'),
+        hasCRLF: str.includes('\r\n'),
+        hex: hex.length > 120 ? hex.slice(0, 120) + '...' : hex,
+        charCodes: charCodes.slice(0, 30),
+        rawPreview: JSON.stringify(str.slice(0, 80)),
+      });
+
+      logRawStream('RX', str);
       term.write(event.data);
     };
 
@@ -305,6 +320,20 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
 
     // Piping user keystrokes into WebSocket
     const onDataDisposable = term.onData((data) => {
+      const charCodes = Array.from(data).map(c => c.charCodeAt(0));
+      const hex = charCodes.map(code => code.toString(16).padStart(2, '0')).join(' ');
+
+      // Explicit console.log capturing raw outgoing keystroke buffer data and verifying \r\n newline integrity
+      console.log(`%c[WebTerminal TX RAW TO BACKEND WS]`, 'color: #38bdf8; font-weight: bold;', {
+        bytes: data.length,
+        hasCR: data.includes('\r'),
+        hasLF: data.includes('\n'),
+        hasCRLF: data.includes('\r\n'),
+        hex: hex,
+        charCodes: charCodes,
+        rawPreview: JSON.stringify(data),
+      });
+
       logRawStream('TX', data);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
@@ -363,6 +392,20 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
       NONE: '',
     };
     const payload = cmd + eolMap[eol];
+    const charCodes = Array.from(payload).map(c => c.charCodeAt(0));
+    const hex = charCodes.map(code => code.toString(16).padStart(2, '0')).join(' ');
+
+    console.log(`%c[WebTerminal TX SEND COMMAND]`, 'color: #a855f7; font-weight: bold;', {
+      command: cmd,
+      eolConfigured: eol,
+      payloadBytes: payload.length,
+      hasCR: payload.includes('\r'),
+      hasLF: payload.includes('\n'),
+      hasCRLF: payload.includes('\r\n'),
+      hex: hex,
+      rawPreview: JSON.stringify(payload),
+    });
+
     logRawStream('TX', payload);
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(payload);
@@ -393,6 +436,87 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
       // Re-trigger effect by re-selecting tab
       onSelectTab(currentTab.tabId);
     }
+  };
+
+  const filteredLogs = rawLogs.filter(log => {
+    if (filterDirection === 'ALL') return true;
+    return log.direction === filterDirection;
+  });
+
+  const txCount = rawLogs.filter(l => l.direction === 'TX').length;
+  const rxCount = rawLogs.filter(l => l.direction === 'RX').length;
+
+  const renderVisualTokens = (text: string) => {
+    const elements: React.ReactNode[] = [];
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const code = char.charCodeAt(0);
+      if (char === '\r') {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded mr-0.5" title="Carriage Return (0x0D)">
+            &lt;CR&gt;
+          </span>
+        );
+      } else if (char === '\n') {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded mr-0.5" title="Line Feed (0x0A)">
+            &lt;LF&gt;
+          </span>
+        );
+      } else if (code === 0x1b) {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40 rounded mr-0.5" title="Escape (0x1B)">
+            &lt;ESC&gt;
+          </span>
+        );
+      } else if (char === '\t') {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-blue-500/20 text-blue-300 border border-blue-500/40 rounded mr-0.5" title="Tab (0x09)">
+            &lt;TAB&gt;
+          </span>
+        );
+      } else if (code === 0x03) {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded mr-0.5" title="ETX / Ctrl+C (0x03)">
+            &lt;ETX&gt;
+          </span>
+        );
+      } else if (code === 0x1a) {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded mr-0.5" title="SUB / Ctrl+Z (0x1A)">
+            &lt;SUB&gt;
+          </span>
+        );
+      } else if (code === 0x08 || code === 0x7f) {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-pink-500/20 text-pink-300 border border-pink-500/40 rounded mr-0.5" title="Backspace / Delete (0x08/0x7F)">
+            &lt;BS&gt;
+          </span>
+        );
+      } else if (code < 32) {
+        elements.push(
+          <span key={i} className="inline-block px-1 py-0 text-[10px] font-mono bg-slate-700 text-slate-300 border border-slate-600 rounded mr-0.5" title={`Control Code 0x${code.toString(16).padStart(2, '0')}`}>
+            &lt;0x{code.toString(16).padStart(2, '0')}&gt;
+          </span>
+        );
+      } else {
+        elements.push(
+          <span key={i} className="font-mono text-slate-200">
+            {char}
+          </span>
+        );
+      }
+    }
+    return elements;
+  };
+
+  const handleCopyRawLogs = () => {
+    const text = filteredLogs
+      .map(l => `[${l.timestamp}] [${l.direction}] (${l.byteLength}B) ${l.text.replace(/\r/g, '<CR>').replace(/\n/g, '<LF>')}\nHEX: ${l.hex}`)
+      .join('\n\n');
+    navigator.clipboard.writeText(text);
+    setLogsCopied(true);
+    setTimeout(() => setLogsCopied(false), 2000);
   };
 
   if (currentUser.role === 'auditor') {
@@ -650,9 +774,336 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
             </form>
           </div>
 
-          {/* xterm.js container */}
-          <div className="relative flex-1 w-full bg-[#090d16] p-2 min-h-0 overflow-hidden">
-            <div ref={terminalRef} className="w-full h-full" />
+          {/* Main Terminal Workspace: xterm.js + Live Stream Inspector */}
+          <div className="relative flex-1 w-full flex min-h-0 overflow-hidden bg-[#090d16]">
+            {/* Left: Interactive xterm.js container */}
+            <div className="relative flex-1 h-full p-2 min-h-0 overflow-hidden">
+              <div ref={terminalRef} className="w-full h-full" />
+            </div>
+
+            {/* Right: Live Raw Stream Inspector & Packet Debugger */}
+            {showInspector && (
+              <div className="w-[440px] xl:w-[500px] shrink-0 border-l border-slate-800 bg-slate-900/95 flex flex-col min-h-0 font-sans z-10">
+                {/* Inspector Header */}
+                <div className="px-3 py-2 bg-slate-850 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <Bug className="w-4 h-4 text-cyan-400" />
+                    <span className="text-xs font-semibold text-white tracking-wide">STREAM PACKET INSPECTOR</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/80 font-mono">
+                      LIVE
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    {/* Pause / Resume */}
+                    <button
+                      onClick={() => setIsPaused(!isPaused)}
+                      className={`p-1 rounded text-xs transition-colors ${
+                        isPaused
+                          ? 'bg-amber-900/40 text-amber-300 border border-amber-700/80'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      }`}
+                      title={isPaused ? 'Resume stream capture' : 'Pause stream capture'}
+                    >
+                      {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {/* Copy All Logs */}
+                    <button
+                      onClick={handleCopyRawLogs}
+                      className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+                      title="Copy packet transcript to clipboard"
+                    >
+                      {logsCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {/* Clear Buffer */}
+                    <button
+                      onClick={() => setRawLogs([])}
+                      className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Clear inspector buffer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+
+                    {/* Close Inspector */}
+                    <button
+                      onClick={() => setShowInspector(false)}
+                      className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors ml-1"
+                      title="Close Inspector"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filter and View Format Controls */}
+                <div className="px-3 py-1.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-xs text-slate-300 shrink-0">
+                  {/* Direction Filter */}
+                  <div className="flex items-center gap-1 font-mono text-[11px]">
+                    <button
+                      onClick={() => setFilterDirection('ALL')}
+                      className={`px-2 py-0.5 rounded transition-colors ${
+                        filterDirection === 'ALL'
+                          ? 'bg-cyan-700 text-white font-semibold'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      ALL ({rawLogs.length})
+                    </button>
+                    <button
+                      onClick={() => setFilterDirection('TX')}
+                      className={`px-2 py-0.5 rounded flex items-center gap-1 transition-colors ${
+                        filterDirection === 'TX'
+                          ? 'bg-sky-600 text-white font-semibold'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <ArrowUpCircle className="w-3 h-3 text-sky-400" />
+                      TX ({txCount})
+                    </button>
+                    <button
+                      onClick={() => setFilterDirection('RX')}
+                      className={`px-2 py-0.5 rounded flex items-center gap-1 transition-colors ${
+                        filterDirection === 'RX'
+                          ? 'bg-emerald-600 text-white font-semibold'
+                          : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <ArrowDownCircle className="w-3 h-3 text-emerald-400" />
+                      RX ({rxCount})
+                    </button>
+                  </div>
+
+                  {/* Format Toggle & Auto-scroll */}
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={viewFormat}
+                      onChange={(e) => setViewFormat(e.target.value as any)}
+                      className="bg-slate-800 text-slate-300 text-[11px] font-mono border border-slate-700 rounded px-1.5 py-0.5 focus:outline-none"
+                    >
+                      <option value="both">View: Both</option>
+                      <option value="visual">View: Tokens</option>
+                      <option value="hex">View: Hex</option>
+                    </select>
+
+                    <label className="flex items-center gap-1 text-[11px] text-slate-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={autoScroll}
+                        onChange={(e) => setAutoScroll(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-800 text-cyan-500"
+                      />
+                      <span>Auto</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Packet Frame Feed */}
+                <div 
+                  ref={logsContainerRef}
+                  className="flex-1 overflow-y-auto p-2.5 space-y-2 min-h-0 bg-slate-950/70 font-mono text-xs select-text"
+                >
+                  {filteredLogs.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 italic">
+                      <Code2 className="w-8 h-8 mb-2 opacity-40 text-cyan-400" />
+                      <p>No stream frames recorded yet.</p>
+                      <p className="text-[11px] mt-1 text-slate-600">Type in the terminal or use the injection tester below to monitor raw buffer flow.</p>
+                    </div>
+                  ) : (
+                    filteredLogs.map((entry) => {
+                      const isTx = entry.direction === 'TX';
+                      const hasCR = entry.text.includes('\r');
+                      const hasLF = entry.text.includes('\n');
+                      const hasCRLF = entry.text.includes('\r\n');
+
+                      return (
+                        <div
+                          key={entry.id}
+                          className={`p-2 rounded border transition-colors ${
+                            isTx
+                              ? 'bg-sky-950/30 border-sky-900/50 hover:border-sky-700/60'
+                              : 'bg-emerald-950/20 border-emerald-900/40 hover:border-emerald-700/50'
+                          }`}
+                        >
+                          {/* Packet Header */}
+                          <div className="flex items-center justify-between text-[11px] mb-1.5 pb-1 border-b border-slate-800/60">
+                            <div className="flex items-center gap-1.5">
+                              {isTx ? (
+                                <span className="flex items-center gap-1 text-sky-400 font-bold bg-sky-950/80 px-1.5 py-0.2 rounded border border-sky-800/60">
+                                  <ArrowUpCircle className="w-3 h-3" />
+                                  TX
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-emerald-400 font-bold bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-800/60">
+                                  <ArrowDownCircle className="w-3 h-3" />
+                                  RX
+                                </span>
+                              )}
+                              <span className="text-slate-500">{entry.timestamp}</span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {/* Newline Flags */}
+                              {hasCRLF ? (
+                                <span className="px-1 text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded">
+                                  CRLF
+                                </span>
+                              ) : (
+                                <>
+                                  {hasCR && (
+                                    <span className="px-1 text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded">
+                                      CR
+                                    </span>
+                                  )}
+                                  {hasLF && (
+                                    <span className="px-1 text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded">
+                                      LF
+                                    </span>
+                                  )}
+                                </>
+                              )}
+                              <span className="text-slate-400 text-[10px] tabular-nums font-mono">
+                                {entry.byteLength}B
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Visual Token Content */}
+                          {(viewFormat === 'visual' || viewFormat === 'both') && (
+                            <div className="text-slate-200 text-xs font-mono break-all whitespace-pre-wrap leading-relaxed py-0.5">
+                              {renderVisualTokens(entry.text)}
+                            </div>
+                          )}
+
+                          {/* Hex Dump Content */}
+                          {(viewFormat === 'hex' || viewFormat === 'both') && (
+                            <div className="text-[11px] font-mono text-slate-400 break-all bg-slate-900/80 p-1.5 rounded mt-1 border border-slate-800">
+                              <span className="text-slate-600 select-none mr-1.5">HEX:</span>
+                              {entry.hex}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Raw Command Injection & Line Ending Tester */}
+                <div className="p-2.5 bg-slate-900 border-t border-slate-800 shrink-0">
+                  <div className="text-[11px] font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
+                    <span>CLI Line-Ending Injection Tester</span>
+                    <span className="text-[10px] text-slate-500">Test switch EOL sensitivity</span>
+                  </div>
+
+                  {/* Input and EOL selector */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (testCmdInput.trim()) {
+                        sendCommand(testCmdInput, testEol);
+                      }
+                    }}
+                    className="flex items-center gap-1.5 mb-2"
+                  >
+                    <input
+                      type="text"
+                      value={testCmdInput}
+                      onChange={(e) => setTestCmdInput(e.target.value)}
+                      placeholder="e.g. show version or display version"
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                    <select
+                      value={testEol}
+                      onChange={(e) => setTestEol(e.target.value as any)}
+                      className="bg-slate-800 text-slate-300 text-xs font-mono border border-slate-700 rounded px-1.5 py-1 focus:outline-none"
+                      title="Select Line Terminator appended to command"
+                    >
+                      <option value="CR">\r (CR - standard)</option>
+                      <option value="CRLF">\r\n (CRLF)</option>
+                      <option value="LF">\n (LF)</option>
+                      <option value="NONE">Raw (None)</option>
+                    </select>
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-medium flex items-center gap-1 transition-colors"
+                    >
+                      <Send className="w-3 h-3" />
+                      <span>Send</span>
+                    </button>
+                  </form>
+
+                  {/* Quick Byte Injector Buttons */}
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] text-slate-500 font-mono mr-1">Inject:</span>
+                    <button
+                      onClick={() => sendCommand('', 'CR')}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send literal Carriage Return (\r = 0x0D)"
+                    >
+                      &lt;CR&gt; (0x0D)
+                    </button>
+                    <button
+                      onClick={() => sendCommand('', 'LF')}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send literal Line Feed (\n = 0x0A)"
+                    >
+                      &lt;LF&gt; (0x0A)
+                    </button>
+                    <button
+                      onClick={() => sendCommand('', 'CRLF')}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send CRLF (\r\n)"
+                    >
+                      &lt;CRLF&gt;
+                    </button>
+                    <button
+                      onClick={() => {
+                        logRawStream('TX', '\x03');
+                        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                          wsRef.current.send('\x03');
+                        }
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send Interrupt (Ctrl+C = 0x03)"
+                    >
+                      ^C
+                    </button>
+                    <button
+                      onClick={() => {
+                        logRawStream('TX', '\x1a');
+                        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                          wsRef.current.send('\x1a');
+                        }
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send Return to User View (Ctrl+Z = 0x1A)"
+                    >
+                      ^Z
+                    </button>
+                    <button
+                      onClick={() => {
+                        logRawStream('TX', '\t');
+                        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                          wsRef.current.send('\t');
+                        }
+                      }}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-blue-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send Tab (0x09)"
+                    >
+                      &lt;TAB&gt;
+                    </button>
+                    <button
+                      onClick={() => sendCommand('?', 'NONE')}
+                      className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 rounded text-[11px] font-mono border border-slate-700/80"
+                      title="Send Help Character (?)"
+                    >
+                      ?
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Terminal Bottom Status Bar */}

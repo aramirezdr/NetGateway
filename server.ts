@@ -1181,7 +1181,8 @@ class RealSshSession implements ITerminalSession {
             ECHO: 1,
             IGNCR: 0,
             INLCR: 0,
-            ICRNL: 1,
+            ICRNL: 0, // CRITICAL: 0 preserves literal CR (\r) so Network CLIs (Comware, AOS-CX, Cisco) register command submissions
+            ONLCR: 1, // Translate newline to CR-LF on output from terminal
           },
         },
         (err, stream) => {
@@ -1193,25 +1194,26 @@ class RealSshSession implements ITerminalSession {
           }
 
           this.stream = stream;
-          console.log(`[SSH-BRIDGE PTY OPEN] Shell stream established for ${this.device.hostname}`);
+          console.log(`[SSH-BRIDGE PTY OPEN] Shell stream established for ${this.device.hostname} (ICRNL=0, ECHO=1)`);
 
           // Flush any keystrokes sent while shell was initializing
           while (this.pendingInputQueue.length > 0) {
             const queued = this.pendingInputQueue.shift();
             if (queued) {
               const hex = Buffer.from(queued).toString('hex');
-              console.log(`[SSH-BRIDGE FLUSHED QUEUE TX -> ${this.device.hostname}] ${queued.length}B: hex=[${hex}] text=[${JSON.stringify(queued)}]`);
+              console.log(`[SSH-BRIDGE FLUSHED QUEUE TX -> ${this.device.hostname}] ${queued.length}B: hex=[${hex}] text=[${JSON.stringify(queued)}] hasCR=${queued.includes('\r')} hasLF=${queued.includes('\n')}`);
               this.stream.write(queued);
             }
           }
 
           stream.on('data', (data: Buffer) => {
             const hex = data.toString('hex');
-            const preview = JSON.stringify(data.toString('utf-8'));
-            console.log(`[SSH-BRIDGE RAW RX <- ${this.device.hostname}] ${data.length}B: hex=[${hex.slice(0, 60)}] text=[${preview.slice(0, 60)}]`);
+            const rawStr = data.toString('utf-8');
+            const preview = JSON.stringify(rawStr);
+            console.log(`[SSH-BRIDGE RAW RX <- ${this.device.hostname}] ${data.length}B: hex=[${hex.slice(0, 80)}] text=[${preview.slice(0, 80)}] hasCR=${rawStr.includes('\r')} hasLF=${rawStr.includes('\n')}`);
 
             if (this.ws.readyState === WebSocket.OPEN) {
-              this.ws.send(data.toString('utf-8'));
+              this.ws.send(rawStr);
             }
           });
 
@@ -1261,7 +1263,7 @@ class RealSshSession implements ITerminalSession {
     if (this.isClosed) return;
     const hex = Buffer.from(data).toString('hex');
     const preview = JSON.stringify(data);
-    console.log(`[SSH-BRIDGE RAW TX -> ${this.device.hostname}] ${data.length}B: hex=[${hex}] text=[${preview}]`);
+    console.log(`[SSH-BRIDGE RAW TX -> ${this.device.hostname}] ${data.length}B: hex=[${hex}] text=[${preview}] hasCR=${data.includes('\r')} hasLF=${data.includes('\n')}`);
 
     if (this.stream) {
       this.stream.write(data);
@@ -1472,11 +1474,33 @@ class DeviceCliSession implements ITerminalSession {
   }
 
   public handleData(data: string) {
+    const hex = Buffer.from(data).toString('hex');
+    console.log(`[DeviceCliSession INCOMING] len=${data.length} hex=[${hex}] raw=[${JSON.stringify(data)}] hasCR=${data.includes('\r')} hasLF=${data.includes('\n')}`);
+
     for (let i = 0; i < data.length; i++) {
       const char = data[i];
 
-      // Handle Enter (\r or \n)
-      if (char === '\r' || char === '\n') {
+      // Handle Enter (\r or \n or \r\n)
+      if (char === '\r') {
+        // If followed by \n (CRLF pair), advance index so \n is not handled as a second Enter
+        if (i + 1 < data.length && data[i + 1] === '\n') {
+          i++;
+        }
+        this.sendLine();
+        const cmd = this.currentLine.trim();
+        this.currentLine = '';
+
+        if (cmd) {
+          this.history.push(cmd);
+          this.historyIndex = this.history.length;
+          this.executeCommand(cmd);
+        } else {
+          this.send(this.getPrompt());
+        }
+        continue;
+      }
+
+      if (char === '\n') {
         this.sendLine();
         const cmd = this.currentLine.trim();
         this.currentLine = '';
@@ -1978,7 +2002,10 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage, context: { devic
 
   ws.on('message', message => {
     try {
-      const msgStr = message.toString();
+      const msgStr = typeof message === 'string' ? message : message.toString();
+      const hex = Buffer.isBuffer(message) ? message.toString('hex') : Buffer.from(msgStr).toString('hex');
+      console.log(`[WS-SERVER INCOMING] len=${msgStr.length} hex=[${hex}] raw=[${JSON.stringify(msgStr)}] hasCR=${msgStr.includes('\r')} hasLF=${msgStr.includes('\n')}`);
+
       // Check if JSON protocol message (e.g., resize or ping)
       if (msgStr.startsWith('{')) {
         const parsed = JSON.parse(msgStr);

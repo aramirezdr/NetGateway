@@ -22,6 +22,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV DATA_DIR=/app/data
+
+# Ensure data directory exists for volume mount
+RUN mkdir -p /app/data
 
 # Reuse dependencies from builder stage (eliminates double npm install and network timeouts)
 COPY --from=builder /app/node_modules ./node_modules

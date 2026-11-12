@@ -24,6 +24,7 @@ import { CredentialsVault } from './components/CredentialsVault.tsx';
 import { AuditLogView } from './components/AuditLogView.tsx';
 import { TopologyView } from './components/TopologyView.tsx';
 import { UserManagement } from './components/UserManagement.tsx';
+import { BackupManagement } from './components/BackupManagement.tsx';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
@@ -32,7 +33,7 @@ export default function App() {
     return token && stored ? stored : null;
   });
 
-  const [currentView, setCurrentView] = useState<'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users'>('inventory');
+  const [currentView, setCurrentView] = useState<'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users' | 'backups'>('inventory');
   const [devices, setDevices] = useState<Device[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -261,6 +262,13 @@ export default function App() {
               <UserManagement
                 currentUser={currentUser}
                 onRefreshSession={reloadData}
+              />
+            )}
+
+            {currentView === 'backups' && (
+              <BackupManagement
+                currentUser={currentUser}
+                onRestoreCompleted={reloadData}
               />
             )}
           </>

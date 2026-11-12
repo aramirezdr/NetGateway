@@ -111,6 +111,7 @@ podman run -d \
   --name netgateway \
   --restart unless-stopped \
   -p 3000:3000 \
+  -v ./data:/app/data:Z \
   --env-file .env \
   netgateway:latest
 
@@ -124,6 +125,7 @@ podman logs -f netgateway
 > podman run -d \
 >   --name netgateway \
 >   --network host \
+>   -v ./data:/app/data:Z \
 >   --env-file .env \
 >   netgateway:latest
 > ```
@@ -139,6 +141,7 @@ After=network-online.target
 [Container]
 Image=netgateway:latest
 PublishPort=3000:3000
+Volume=%h/netgateway/data:/app/data:Z
 EnvironmentFile=%h/netgateway/.env
 Restart=always
 
@@ -395,6 +398,7 @@ podman logs -f netgateway
 > podman run -d \
 >   --name netgateway \
 >   --network host \
+>   -v ./data:/app/data:Z \
 >   --env-file .env \
 >   netgateway:latest
 > ```
@@ -410,6 +414,7 @@ After=network-online.target
 [Container]
 Image=netgateway:latest
 PublishPort=3000:3000
+Volume=%h/netgateway/data:/app/data:Z
 EnvironmentFile=%h/netgateway/.env
 Restart=always
 
@@ -548,3 +553,67 @@ Si tu infraestructura corporativa exige la ejecución del backend en Python:
 4. Ingresa la IP de gestión de tu switch o router real (ej: `10.240.0.1`), fabricante y selecciona el perfil de credencial correspondiente.
 5. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
 6. Haz clic en **`Web CLI`** para abrir la consola SSH interactiva directamente en tu navegador.
+
+---
+
+## 💾 Persistencia de Datos y Respaldos (Docker & Podman)
+
+NetGateway utiliza un motor de almacenamiento JSON transaccional con escrituras atómicas en disco montado en `./data:/app/data`.
+
+### Archivos de Persistencia en el Host (`./data/`)
+| Archivo | Contenido |
+|---|---|
+| `devices.json` | Equipos registrados, IPs, protocolos, puertos y **códigos de inventario / activo (`asset_id`)**. |
+| `credentials.json` | Perfiles de acceso SSH/Telnet cifrados con AES-256-GCM. |
+| `users.json` | Cuentas locales de usuarios, hashes bcrypt y roles RBAC (Admin, Engineer, Operator, Auditor). |
+| `audit_logs.json` | Historial de auditoría, aperturas de sesión SSH y comandos ejecutados. |
+
+### Cómo Crear un Respaldo (Backup)
+```bash
+# Crear un archivo comprimido con la fecha actual
+tar -czvf netgateway_backup_$(date +%F).tar.gz ./data/
+```
+
+### Cómo Restaurar un Respaldo
+```bash
+# Detener el contenedor
+docker compose down   # o podman compose down
+
+# Restaurar la carpeta data
+tar -xzvf netgateway_backup_2026-11-12.tar.gz
+
+# Iniciar nuevamente
+docker compose up -d  # o podman compose up -d
+```
+
+### Comportamiento ante `--build`
+Cada vez que realices cambios de código y ejecutes:
+```bash
+docker compose up -d --build
+# o
+podman compose up -d --build
+```
+El volumen montado `./data:/app/data` mantiene **intactos** todos los equipos agregados, credenciales guardadas y registros de auditoría, eliminando cualquier pérdida de información entre versiones y despliegues.
+
+---
+
+## 🗄️ Módulo Integrado de Respaldos (Web UI & REST API)
+
+NetGateway incluye ahora una pestaña dedicada de **Backups (Respaldos del Sistema)** accesible directamente en la barra de navegación superior:
+
+1. **Creación de Snapshots Bajo Demanda:**
+   * Haz clic en **`Crear Respaldo Ahora`** y agrega una nota o motivo (ej. "Pre-actualización de firmware").
+   * El sistema genera un archivo JSON con timestamp en `./data/backups/netgateway-backup-*.json` y calcula su hash SHA-256.
+2. **Descarga a la Máquina Local (Offsite Storage):**
+   * Haz clic en **`Descargar`** en cualquier snapshot para guardar una copia de seguridad en tu equipo o moverla a un almacenamiento frío/seguro.
+3. **Subida / Importación de Respaldos Externos:**
+   * Haz clic en **`Subir Respaldo`** para cargar un archivo `.json` desde tu ordenador y registrarlo en el servidor.
+4. **Restauración con Protección Pre-Restore:**
+   * Haz clic en **`Restaurar`** en cualquier snapshot.
+   * **Garantía de Seguridad:** Antes de aplicar cualquier cambio, el backend genera automáticamente un snapshot de seguridad previo del estado actual.
+   * Puedes elegir restaurar todos los módulos o seleccionar específicamente: Equipos, Vault de Credenciales, Usuarios RBAC, o Logs de Auditoría.
+5. **Programación Automática (Scheduler):**
+   * Configura respaldos diarios o semanales con hora programada (ej. `02:00`).
+   * Define la **política de retención** (ej. conservar los últimos 10 respaldos y rotar automáticamente los más antiguos para cuidar el espacio en disco).
+
+

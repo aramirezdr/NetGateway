@@ -25,7 +25,8 @@ import {
   Download,
   Send,
   Eye,
-  EyeOff
+  EyeOff,
+  Radio
 } from 'lucide-react';
 
 export interface RawStreamEntry {
@@ -82,6 +83,24 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
   const logsContainerRef = useRef<HTMLDivElement>(null);
   const isPausedRef = useRef(isPaused);
   isPausedRef.current = isPaused;
+
+  // Local Echo Mode State (for SSH sessions or terminal servers with no remote echo)
+  const [localEcho, setLocalEcho] = useState<boolean>(false);
+  const localEchoRef = useRef<boolean>(localEcho);
+  localEchoRef.current = localEcho;
+
+  const handleToggleLocalEcho = () => {
+    const nextVal = !localEcho;
+    setLocalEcho(nextVal);
+    console.log(`[WebTerminal] Echo Mode changed to: ${nextVal ? 'LOCAL ECHO (ON)' : 'REMOTE ECHO (OFF)'}`);
+    if (termInstanceRef.current) {
+      if (nextVal) {
+        termInstanceRef.current.write('\r\n\x1b[33m[Echo Mode: LOCAL ECHO ACTIVADO - Caracteres tecleados se imprimirán localmente]\x1b[0m\r\n');
+      } else {
+        termInstanceRef.current.write('\r\n\x1b[90m[Echo Mode: REMOTE ECHO (Desactivado eco local - esperando eco del equipo remoto)]\x1b[0m\r\n');
+      }
+    }
+  };
 
   const logRawStream = (direction: 'TX' | 'RX', rawData: unknown) => {
     if (isPausedRef.current) return;
@@ -334,6 +353,22 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
         rawPreview: JSON.stringify(data),
       });
 
+      // Local Echo: If remote switch is not echoing typed characters, write them locally to screen
+      if (localEchoRef.current) {
+        if (data === '\r') {
+          term.write('\r\n');
+        } else if (data === '\x7f' || data === '\b') {
+          term.write('\b \b');
+        } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+          term.write(data);
+        } else if (data === '\t') {
+          term.write('  ');
+        } else if (data.length > 1) {
+          // Multicharacter input (e.g. pasted text)
+          term.write(data.replace(/\r/g, '\r\n'));
+        }
+      }
+
       logRawStream('TX', data);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
@@ -405,6 +440,11 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
       hex: hex,
       rawPreview: JSON.stringify(payload),
     });
+
+    // If local echo is enabled and a command was sent via UI toolbar, echo it to terminal
+    if (localEchoRef.current && termInstanceRef.current && cmd) {
+      termInstanceRef.current.write(cmd + '\r\n');
+    }
 
     logRawStream('TX', payload);
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -645,6 +685,11 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
                   }`}
                 />
                 <span className="font-semibold text-white">{currentTab.device.hostname}</span>
+                {currentTab.device.asset_id && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-cyan-300 font-normal" title="ID de Inventario / Código de Bien">
+                    ID: {currentTab.device.asset_id}
+                  </span>
+                )}
               </div>
               <span className="text-slate-600">·</span>
               <span className="text-slate-400">{currentTab.device.management_ip}:{currentTab.device.port}</span>
@@ -713,6 +758,24 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
                 title="Reconnect session"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Echo Mode Toggle */}
+              <button
+                onClick={handleToggleLocalEcho}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono transition-all border ${
+                  localEcho
+                    ? 'bg-amber-950/80 border-amber-500 text-amber-300 shadow-sm shadow-amber-500/20 font-semibold'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700'
+                }`}
+                title={
+                  localEcho
+                    ? 'Echo Mode: LOCAL ECHO ACTIVO - Los caracteres se escriben en pantalla localmente. Haz clic para desactivar (volver a REMOTE ECHO).'
+                    : 'Echo Mode: REMOTE ECHO (Por defecto) - El switch remoto hace el eco. Si al teclear no ves las letras en la consola, haz clic para activar LOCAL ECHO.'
+                }
+              >
+                <Radio className={`w-3.5 h-3.5 ${localEcho ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
+                <span>Echo: {localEcho ? 'LOCAL' : 'REMOTE'}</span>
               </button>
 
               {/* Raw Stream Inspector Toggle */}
@@ -794,7 +857,20 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
+                    {/* Echo Mode Quick Toggle in Inspector */}
+                    <button
+                      onClick={handleToggleLocalEcho}
+                      className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors border ${
+                        localEcho
+                          ? 'bg-amber-950/80 border-amber-500 text-amber-300 font-semibold'
+                          : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                      }`}
+                      title={localEcho ? 'Local Echo is ON: click to turn OFF' : 'Local Echo is OFF: click to turn ON'}
+                    >
+                      Echo: {localEcho ? 'LOCAL' : 'REMOTE'}
+                    </button>
+
                     {/* Pause / Resume */}
                     <button
                       onClick={() => setIsPaused(!isPaused)}
@@ -1112,6 +1188,12 @@ export const WebTerminal: React.FC<WebTerminalProps> = ({
               <span>Status: <span className={connectionStatus === 'connected' ? 'text-emerald-400' : 'text-amber-400'}>{connectionStatus.toUpperCase()}</span></span>
               <span>Encoding: UTF-8</span>
               <span>Emulation: xterm-256color</span>
+              <span>
+                Echo:{' '}
+                <span className={localEcho ? 'text-amber-400 font-semibold' : 'text-slate-300'}>
+                  {localEcho ? 'LOCAL' : 'REMOTE'}
+                </span>
+              </span>
             </div>
             <div className="flex items-center gap-4">
               <span>Auth: {currentUser.username} ({currentUser.role})</span>

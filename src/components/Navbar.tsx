@@ -1,10 +1,10 @@
 import React from 'react';
 import type { User, UserRole } from '../types/index.ts';
-import { Terminal, Shield, Server, FileText, Network, UserCheck, Users, LogOut } from 'lucide-react';
+import { Terminal, Shield, Server, FileText, Network, UserCheck, Users, LogOut, Archive } from 'lucide-react';
 
 interface NavbarProps {
-  currentTab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users';
-  onSelectTab: (tab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users') => void;
+  currentTab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users' | 'backups';
+  onSelectTab: (tab: 'inventory' | 'terminal' | 'credentials' | 'audit' | 'topology' | 'users' | 'backups') => void;
   currentUser: User;
   onLogout: () => void;
   activeTerminalCount: number;
@@ -115,6 +115,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               Users &amp; RBAC
             </button>
           )}
+
+          <button
+            onClick={() => onSelectTab('backups')}
+            className={`whitespace-nowrap shrink-0 transition-colors pb-0.5 border-b-2 flex items-center gap-1.5 ${
+              currentTab === 'backups'
+                ? 'text-cyan-400 border-cyan-400 font-semibold'
+                : 'text-slate-400 border-transparent hover:text-slate-200'
+            }`}
+          >
+            <Archive className="w-4 h-4 text-cyan-400" />
+            Backups
+          </button>
         </nav>
 
         {/* Zone 3: Authenticated Profile & Logout */}

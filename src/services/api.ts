@@ -1,4 +1,4 @@
-import type { Device, Credential, AuditLogEntry, User, UserRole } from '../types/index.ts';
+import type { Device, Credential, AuditLogEntry, User, UserRole, BackupMetadata, BackupScheduleConfig } from '../types/index.ts';
 
 const TOKEN_KEY = 'netgateway_jwt_token';
 const USER_KEY = 'netgateway_current_user';
@@ -256,3 +256,108 @@ export async function fetchAuditLogs(action?: string): Promise<AuditLogEntry[]> 
   const data = await res.json();
   return data.logs;
 }
+
+// ---------------- BACKUP & DISASTER RECOVERY CLIENT ----------------
+
+export async function fetchBackups(): Promise<BackupMetadata[]> {
+  const res = await fetch('/api/v1/backups', {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Error al consultar lista de respaldos');
+  const data = await res.json();
+  return data.backups || [];
+}
+
+export async function createBackup(description?: string): Promise<{ message: string; backup: BackupMetadata }> {
+  const res = await fetch('/api/v1/backups', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Error al generar respaldo' }));
+    throw new Error(err.error || 'Error al generar respaldo');
+  }
+  return await res.json();
+}
+
+export async function downloadBackupFile(filename: string): Promise<void> {
+  const token = getStoredToken();
+  const res = await fetch(`/api/v1/backups/${encodeURIComponent(filename)}/download`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) {
+    throw new Error('Error al descargar el archivo de respaldo');
+  }
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+}
+
+export async function uploadBackupFile(filename: string, content: string | object): Promise<{ message: string; backup: BackupMetadata }> {
+  const res = await fetch('/api/v1/backups/upload', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ filename, content }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Error al subir archivo de respaldo' }));
+    throw new Error(err.error || 'Error al subir archivo de respaldo');
+  }
+  return await res.json();
+}
+
+export async function restoreBackup(filename: string, components?: string[]): Promise<{ message: string; details: any }> {
+  const res = await fetch(`/api/v1/backups/${encodeURIComponent(filename)}/restore`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ components }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Error durante la restauración del sistema' }));
+    throw new Error(err.error || 'Error durante la restauración del sistema');
+  }
+  return await res.json();
+}
+
+export async function deleteBackup(filename: string): Promise<void> {
+  const res = await fetch(`/api/v1/backups/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Error al eliminar respaldo' }));
+    throw new Error(err.error || 'Error al eliminar respaldo');
+  }
+}
+
+export async function fetchBackupSchedule(): Promise<BackupScheduleConfig> {
+  const res = await fetch('/api/v1/backups/schedule', {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error('Error al consultar configuración de respaldos');
+  const data = await res.json();
+  return data.schedule;
+}
+
+export async function updateBackupSchedule(config: Partial<BackupScheduleConfig>): Promise<{ message: string; schedule: BackupScheduleConfig }> {
+  const res = await fetch('/api/v1/backups/schedule', {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Error al actualizar programación' }));
+    throw new Error(err.error || 'Error al actualizar programación');
+  }
+  return await res.json();
+}
+

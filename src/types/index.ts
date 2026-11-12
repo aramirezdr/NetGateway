@@ -21,6 +21,7 @@ export interface Device {
   last_seen?: string;
   description?: string;
   serial_number?: string;
+  asset_id?: string; // Código de inventario asignado en la empresa como bien (e.g. ACT-2024-0012, CRIE-INV-4402)
 }
 
 export interface Credential {
@@ -50,11 +51,57 @@ export interface AuditLogEntry {
   id: string;
   timestamp: string;
   user: string;
-  action: 'SESSION_START' | 'SESSION_CLOSE' | 'COMMAND_EXEC' | 'CONFIG_CHANGE' | 'DEVICE_CREATE' | 'DEVICE_UPDATE' | 'DEVICE_DELETE' | 'CREDENTIAL_ACCESS';
+  action: 'SESSION_START' | 'SESSION_CLOSE' | 'COMMAND_EXEC' | 'CONFIG_CHANGE' | 'DEVICE_CREATE' | 'DEVICE_UPDATE' | 'DEVICE_DELETE' | 'CREDENTIAL_ACCESS' | 'BACKUP_CREATE' | 'BACKUP_RESTORE' | 'BACKUP_DELETE' | 'BACKUP_DOWNLOAD';
   device_id?: string;
   device_hostname?: string;
   details: string;
   status: 'success' | 'denied' | 'failed';
+}
+
+export interface BackupMetadata {
+  id: string;
+  filename: string;
+  timestamp: string;
+  size_bytes: number;
+  size_formatted: string;
+  created_by: string;
+  description?: string;
+  device_count: number;
+  credential_count: number;
+  user_count: number;
+  audit_log_count: number;
+  checksum: string;
+  is_automatic?: boolean;
+}
+
+export interface BackupScheduleConfig {
+  enabled: boolean;
+  frequency: 'daily' | 'weekly' | 'hourly';
+  time: string; // e.g. "02:00"
+  retention_count: number; // e.g. 10
+  last_run?: string;
+  next_run?: string;
+}
+
+export interface BackupDataPayload {
+  version: string;
+  created_at: string;
+  created_by: string;
+  description?: string;
+  is_automatic?: boolean;
+  metadata: {
+    system: string;
+    node_version: string;
+    platform: string;
+    device_count: number;
+    credential_count: number;
+    user_count: number;
+    audit_log_count: number;
+  };
+  devices: Device[];
+  credentials: any[];
+  users: any[];
+  audit_logs: AuditLogEntry[];
 }
 
 export interface ActiveTerminalTab {

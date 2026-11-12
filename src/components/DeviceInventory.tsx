@@ -65,6 +65,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   const [pingingId, setPingingId] = useState<string | null>(null);
 
   // New Device Form State
+  const [newAssetId, setNewAssetId] = useState('');
   const [newHostname, setNewHostname] = useState('');
   const [newIp, setNewIp] = useState('');
   const [newVendor, setNewVendor] = useState<VendorType>('Cisco');
@@ -81,6 +82,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
 
   // Edit Device State
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
+  const [editAssetId, setEditAssetId] = useState('');
   const [editHostname, setEditHostname] = useState('');
   const [editIp, setEditIp] = useState('');
   const [editVendor, setEditVendor] = useState<VendorType>('Cisco');
@@ -175,6 +177,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
             isValid: errors.length === 0,
             error: errors.join(', '),
             device: {
+              asset_id: item.asset_id || item.asset || item.idinventario || item.codigo_inventario || item.inventario ? String(item.asset_id || item.asset || item.idinventario || item.codigo_inventario || item.inventario).trim() : undefined,
               hostname: String(item.hostname || '').trim().toUpperCase(),
               management_ip: ip,
               vendor,
@@ -208,7 +211,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
     const headerTokens = parseCSVLine(lines[0], delimiter).map(h => h.toLowerCase().replace(/[\s_-]+/g, ''));
     
     // Check if first line contains known headers
-    const hasHeader = headerTokens.some(h => ['hostname', 'host', 'ip', 'managementip', 'vendor', 'model'].includes(h));
+    const hasHeader = headerTokens.some(h => ['hostname', 'host', 'ip', 'managementip', 'vendor', 'model', 'assetid', 'asset'].includes(h));
     const dataLines = hasHeader ? lines.slice(1) : lines;
 
     const getIndex = (aliases: string[]) => {
@@ -216,6 +219,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
       return headerTokens.findIndex(h => aliases.includes(h));
     };
 
+    const assetIdx = hasHeader ? getIndex(['assetid', 'asset', 'idinventario', 'codigoinventario', 'inventario', 'bien', 'placa']) : -1;
     const hostIdx = hasHeader ? getIndex(['hostname', 'host', 'name']) : 0;
     const ipIdx = hasHeader ? getIndex(['managementip', 'ip', 'ipaddress']) : 1;
     const vendorIdx = hasHeader ? getIndex(['vendor', 'manufacturer', 'brand']) : 2;
@@ -233,6 +237,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
       const tokens = parseCSVLine(line, delimiter);
       const errors: string[] = [];
 
+      const rawAssetId = (assetIdx >= 0 && assetIdx < tokens.length) ? tokens[assetIdx].trim() : '';
       const rawHostname = (hostIdx >= 0 && hostIdx < tokens.length) ? tokens[hostIdx] : (tokens[0] || '');
       const rawIp = (ipIdx >= 0 && ipIdx < tokens.length) ? tokens[ipIdx] : (tokens[1] || '');
       const rawVendor = (vendorIdx >= 0 && vendorIdx < tokens.length) ? tokens[vendorIdx] : (tokens[2] || 'Cisco');
@@ -272,6 +277,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
         isValid: errors.length === 0,
         error: errors.join(', '),
         device: {
+          asset_id: rawAssetId || undefined,
           hostname: rawHostname.trim().toUpperCase(),
           management_ip: rawIp.trim(),
           vendor,
@@ -291,11 +297,11 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
 
   const handleDownloadCSVTemplate = () => {
     const csvContent = [
-      'hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description',
-      'US-WEST-CORE-R02,10.240.20.1,Cisco,Catalyst 9500-48Y4C,IOS-XE 17.9.4,SSH,22,,cred-1,DC-Ashburn-Rack02,"Core, BGP",Primary Core Router',
-      'US-EAST-FW-01,10.240.0.253,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-Ashburn-Rack01,"Perimeter, IPS",Edge Firewall Cluster',
-      'US-CAMPUS-SW01,10.100.20.10,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Campus-BldgA-IDF1,"Distribution, VLAN",Campus Aggregation',
-      'CONSOLE-POD-01,10.240.254.20,OpenGear,IM7216,v4.12,Terminal Server,2001,1,cred-4,DC-Ashburn-Console,"OOB, Serial",Console Terminal Server'
+      'asset_id,hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description',
+      'ACT-CRIE-001,US-WEST-CORE-R02,10.240.20.1,Cisco,Catalyst 9500-48Y4C,IOS-XE 17.9.4,SSH,22,,cred-1,DC-Ashburn-Rack02,"Core, BGP",Primary Core Router',
+      'ACT-CRIE-002,US-EAST-FW-01,10.240.0.253,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-Ashburn-Rack01,"Perimeter, IPS",Edge Firewall Cluster',
+      'ACT-CRIE-003,US-CAMPUS-SW01,10.100.20.10,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Campus-BldgA-IDF1,"Distribution, VLAN",Campus Aggregation',
+      'ACT-CRIE-004,CONSOLE-POD-01,10.240.254.20,OpenGear,IM7216,v4.12,Terminal Server,2001,1,cred-4,DC-Ashburn-Console,"OOB, Serial",Console Terminal Server'
     ].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -310,6 +316,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   const handleDownloadJSONTemplate = () => {
     const jsonContent = JSON.stringify([
       {
+        asset_id: "ACT-CRIE-001",
         hostname: "US-WEST-CORE-R02",
         management_ip: "10.240.20.1",
         vendor: "Cisco",
@@ -323,6 +330,7 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
         description: "Primary Core Router"
       },
       {
+        asset_id: "ACT-CRIE-002",
         hostname: "US-EAST-FW-01",
         management_ip: "10.240.0.253",
         vendor: "Palo Alto",
@@ -347,10 +355,10 @@ export const DeviceInventory: React.FC<DeviceInventoryProps> = ({
   };
 
   const handleLoadSampleData = () => {
-    setBulkInputText(`hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description
-US-WEST-DIST-01,10.240.30.1,Cisco,Catalyst 9300-48UXM,IOS-XE 17.9.4,SSH,22,,cred-1,DC-West-Rack03,"Distribution, Access",West Distribution Switch
-US-CORE-FW-02,10.240.0.254,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-East-Rack01,"Perimeter, BGP",Secondary Edge Firewall
-BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Branch-Office-02,"Campus, PoE",Branch Access Switch`);
+    setBulkInputText(`asset_id,hostname,management_ip,vendor,model,os_version,connection_type,port,terminal_line,credentials_id,location,tags,description
+ACT-CRIE-007,US-WEST-DIST-01,10.240.30.1,Cisco,Catalyst 9300-48UXM,IOS-XE 17.9.4,SSH,22,,cred-1,DC-West-Rack03,"Distribution, Access",West Distribution Switch
+ACT-CRIE-008,US-CORE-FW-02,10.240.0.254,Palo Alto,PA-5220,PAN-OS 11.0.2,SSH,22,,cred-2,DC-East-Rack01,"Perimeter, BGP",Secondary Edge Firewall
+ACT-CRIE-009,BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Branch-Office-02,"Campus, PoE",Branch Access Switch`);
     setImportTab('paste');
   };
 
@@ -374,6 +382,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const match =
+        (d.asset_id && d.asset_id.toLowerCase().includes(q)) ||
         d.hostname.toLowerCase().includes(q) ||
         d.management_ip.includes(q) ||
         d.model.toLowerCase().includes(q) ||
@@ -408,6 +417,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
     try {
       const selectedCred = newCredentialsId || (credentials && credentials.length > 0 ? credentials[0].id : 'cred-1');
       await onAddDevice({
+        asset_id: newAssetId.trim() || undefined,
         hostname: newHostname.trim().toUpperCase(),
         management_ip: newIp.trim(),
         vendor: newVendor,
@@ -423,6 +433,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
       });
       setShowAddModal(false);
       // Reset form
+      setNewAssetId('');
       setNewHostname('');
       setNewIp('');
       setNewCredentialsId('');
@@ -434,6 +445,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
 
   const handleStartEditDevice = (dev: Device) => {
     setEditingDevice(dev);
+    setEditAssetId(dev.asset_id || '');
     setEditHostname(dev.hostname);
     setEditIp(dev.management_ip);
     setEditVendor(dev.vendor);
@@ -470,6 +482,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
     setIsSavingEdit(true);
     try {
       const updates: Partial<Device> = {
+        asset_id: editAssetId.trim() || undefined,
         hostname: editHostname.trim().toUpperCase(),
         management_ip: editIp.trim(),
         vendor: editVendor,
@@ -654,8 +667,15 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                   >
                     {/* Hostname & Management IP */}
                     <td className="py-3.5 px-4">
-                      <div className="font-mono font-semibold text-white group-hover:text-cyan-400 transition-colors cursor-pointer" onClick={() => handleOpenDeviceDetails(dev)}>
-                        {dev.hostname}
+                      <div className="flex items-center gap-2">
+                        <div className="font-mono font-semibold text-white group-hover:text-cyan-400 transition-colors cursor-pointer" onClick={() => handleOpenDeviceDetails(dev)}>
+                          {dev.hostname}
+                        </div>
+                        {dev.asset_id && (
+                          <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-slate-800/90 border border-slate-700/80 text-cyan-300 tracking-wide" title="Código de Inventario / ID de Bien">
+                            {dev.asset_id}
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5 mt-0.5">
                         <span className="tabular-nums">{dev.management_ip}</span>
@@ -826,7 +846,14 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                   <Server className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white font-mono">{selectedDevice.hostname}</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white font-mono">{selectedDevice.hostname}</h3>
+                    {selectedDevice.asset_id && (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-700/60 text-cyan-300 font-semibold">
+                        ID: {selectedDevice.asset_id}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-slate-400">{selectedDevice.description || 'Enterprise Network Asset'}</p>
                 </div>
               </div>
@@ -839,6 +866,10 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 py-4 text-xs">
+              <div className="border border-slate-800/80 rounded p-2.5 bg-slate-950/40">
+                <span className="text-slate-500 block">ID de Inventario / Bien</span>
+                <span className="font-mono text-cyan-300 text-sm font-semibold">{selectedDevice.asset_id || 'Sin Asignar'}</span>
+              </div>
               <div className="border border-slate-800/80 rounded p-2.5 bg-slate-950/40">
                 <span className="text-slate-500 block">Management IP</span>
                 <span className="font-mono text-white text-sm font-semibold">{selectedDevice.management_ip}</span>
@@ -858,10 +889,6 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
               <div className="border border-slate-800/80 rounded p-2.5 bg-slate-950/40">
                 <span className="text-slate-500 block">Physical Location</span>
                 <span className="text-slate-300">{selectedDevice.location}</span>
-              </div>
-              <div className="border border-slate-800/80 rounded p-2.5 bg-slate-950/40">
-                <span className="text-slate-500 block">System Uptime</span>
-                <span className="text-emerald-400 font-mono">{selectedDevice.uptime || '99.98%'}</span>
               </div>
             </div>
 
@@ -992,8 +1019,19 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
             )}
 
             <form onSubmit={handleCreateSubmit} className="space-y-4 py-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-1">
+                  <label className="block text-slate-400 mb-1">ID Inventario / Bien</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. ACT-CRIE-0012"
+                    value={newAssetId}
+                    onChange={(e) => setNewAssetId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-cyan-300 focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Código de activo fijo</span>
+                </div>
+                <div className="sm:col-span-1">
                   <label className="block text-slate-400 mb-1">Hostname *</label>
                   <input
                     type="text"
@@ -1003,8 +1041,9 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                     onChange={(e) => setNewHostname(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Identificador de red</span>
                 </div>
-                <div>
+                <div className="sm:col-span-1">
                   <label className="block text-slate-400 mb-1">Management IP *</label>
                   <input
                     type="text"
@@ -1014,6 +1053,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                     onChange={(e) => setNewIp(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">IPv4 / IPv6 reachable</span>
                 </div>
               </div>
 
@@ -1194,8 +1234,19 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
             )}
 
             <form onSubmit={handleEditDeviceSubmit} className="space-y-4 py-4 text-xs overflow-y-auto pr-1">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-1">
+                  <label className="block text-slate-400 mb-1 font-medium">ID Inventario / Bien</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. ACT-CRIE-0012"
+                    value={editAssetId}
+                    onChange={(e) => setEditAssetId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-cyan-300 focus:outline-none focus:border-cyan-500 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Código de activo fijo</span>
+                </div>
+                <div className="sm:col-span-1">
                   <label className="block text-slate-400 mb-1 font-medium">Hostname *</label>
                   <input
                     type="text"
@@ -1205,8 +1256,9 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                     onChange={(e) => setEditHostname(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Identificador de red</span>
                 </div>
-                <div>
+                <div className="sm:col-span-1">
                   <label className="block text-slate-400 mb-1 font-medium">Management IP *</label>
                   <input
                     type="text"
@@ -1216,6 +1268,7 @@ BRANCH-ACC-SW02,10.100.20.20,HP/Aruba,5900AF-48G,Comware 7.1,SSH,22,,cred-3,Bran
                     onChange={(e) => setEditIp(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">IPv4 / IPv6 reachable</span>
                 </div>
               </div>
 

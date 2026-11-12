@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import http from 'http';
 import net from 'net';
+import fs from 'fs';
 import { execFile } from 'child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
@@ -9,7 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import { Client as SshClient } from 'ssh2';
-import type { Device, Credential, AuditLogEntry, User, UserRole } from './src/types/index.ts';
+import type { Device, Credential, AuditLogEntry, User, UserRole, BackupMetadata, BackupScheduleConfig, BackupDataPayload } from './src/types/index.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,7 +21,8 @@ const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'netgateway-super-secret-enterprise-key-2026';
 const AES_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest();
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Helper to encrypt secrets at rest
 function encryptSecret(plaintext: string): string {
@@ -49,8 +51,8 @@ function decryptSecret(encryptedStr: string): string {
   }
 }
 
-// In-Memory Database Store with enterprise data
-let credentialsStore: (Credential & { encrypted_secret: string; enable_secret?: string })[] = [
+// Default Enterprise Seed Data
+const defaultCredentials: (Credential & { encrypted_secret: string; enable_secret?: string })[] = [
   {
     id: 'cred-1',
     name: 'TACACS+ Core Engineering',
@@ -98,10 +100,11 @@ let credentialsStore: (Credential & { encrypted_secret: string; enable_secret?: 
   },
 ];
 
-let devicesStore: Device[] = [
+const defaultDevices: Device[] = [
   {
     id: 'dev-cisco-core-01',
     hostname: 'US-EAST-CORE-R01',
+    asset_id: 'ACT-CRIE-001',
     management_ip: '10.240.0.1',
     vendor: 'Cisco',
     model: 'Catalyst 9500-48Y4C',
@@ -120,6 +123,7 @@ let devicesStore: Device[] = [
   {
     id: 'dev-cisco-agg-02',
     hostname: 'US-EAST-AGG-SW02',
+    asset_id: 'ACT-CRIE-002',
     management_ip: '10.240.10.2',
     vendor: 'Cisco',
     model: 'Catalyst 9300-48UXM',
@@ -138,6 +142,7 @@ let devicesStore: Device[] = [
   {
     id: 'dev-pa-fw-01',
     hostname: 'EDGE-PA5220-FW01',
+    asset_id: 'ACT-CRIE-003',
     management_ip: '192.168.100.1',
     vendor: 'Palo Alto',
     model: 'PA-5220 Next-Gen Firewall',
@@ -156,6 +161,7 @@ let devicesStore: Device[] = [
   {
     id: 'dev-aruba-campus-sw01',
     hostname: 'HQ-CAMPUS-ARUBA-SW01',
+    asset_id: 'ACT-CRIE-004',
     management_ip: '10.100.20.5',
     vendor: 'HP/Aruba',
     model: '5406R zl2 Switch',
@@ -174,6 +180,7 @@ let devicesStore: Device[] = [
   {
     id: 'dev-oob-term-srv01',
     hostname: 'DC1-OOB-TERMINAL-SRV01',
+    asset_id: 'ACT-CRIE-005',
     management_ip: '172.16.1.50',
     vendor: 'OpenGear',
     model: 'CM7116 Console Server',
@@ -193,6 +200,7 @@ let devicesStore: Device[] = [
   {
     id: 'dev-cisco-edge-isr',
     hostname: 'BRANCH-ISR4451-R01',
+    asset_id: 'ACT-CRIE-006',
     management_ip: '10.150.0.1',
     vendor: 'Cisco',
     model: 'ISR 4451-X',
@@ -210,7 +218,7 @@ let devicesStore: Device[] = [
   },
 ];
 
-let auditLogs: AuditLogEntry[] = [
+const defaultAuditLogs: AuditLogEntry[] = [
   {
     id: 'log-101',
     timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
@@ -260,7 +268,7 @@ export interface StoredUser extends User {
 
 const defaultSalt = bcrypt.genSaltSync(10);
 
-let usersStore: StoredUser[] = [
+const defaultUsers: StoredUser[] = [
   {
     id: 'usr-admin-1',
     username: 'admin',
@@ -310,6 +318,207 @@ let usersStore: StoredUser[] = [
     passwordHash: bcrypt.hashSync('Auditor2026!', defaultSalt),
   },
 ];
+
+// ============================================================================
+// DOCKER / PODMAN PERSISTENT STORAGE ENGINE
+// ============================================================================
+const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/app/data') ? '/app/data' : path.resolve(process.cwd(), 'data'));
+
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    console.log(`[STORAGE] Created persistent data volume directory at: ${DATA_DIR}`);
+  } else {
+    console.log(`[STORAGE] Using persistent data volume directory at: ${DATA_DIR}`);
+  }
+} catch (err: any) {
+  console.error(`[STORAGE] Error initializing data directory ${DATA_DIR}:`, err.message);
+}
+
+const DEVICES_FILE = path.join(DATA_DIR, 'devices.json');
+const CREDENTIALS_FILE = path.join(DATA_DIR, 'credentials.json');
+const AUDIT_LOGS_FILE = path.join(DATA_DIR, 'audit_logs.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+function loadJsonStore<T>(filePath: string, fallback: T): T {
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      console.log(`[STORAGE] Loaded ${Array.isArray(parsed) ? `${parsed.length} records` : 'data'} from ${path.basename(filePath)}`);
+      return parsed;
+    }
+  } catch (err: any) {
+    console.error(`[STORAGE] Error loading ${filePath}, seeding with default data:`, err.message);
+  }
+  saveJsonStore(filePath, fallback);
+  return fallback;
+}
+
+function saveJsonStore<T>(filePath: string, data: T): void {
+  try {
+    const tmp = `${filePath}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmp, filePath);
+  } catch (err: any) {
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (writeErr: any) {
+      console.error(`[STORAGE] Failed to write file ${filePath}:`, writeErr.message);
+    }
+  }
+}
+
+// Active in-memory stores initialized from persistent storage
+let credentialsStore: (Credential & { encrypted_secret: string; enable_secret?: string })[] = loadJsonStore(CREDENTIALS_FILE, defaultCredentials);
+let devicesStore: Device[] = loadJsonStore(DEVICES_FILE, defaultDevices);
+let auditLogs: AuditLogEntry[] = loadJsonStore(AUDIT_LOGS_FILE, defaultAuditLogs);
+let usersStore: StoredUser[] = loadJsonStore(USERS_FILE, defaultUsers);
+
+// Persistence helper triggers
+function saveDevices() { saveJsonStore(DEVICES_FILE, devicesStore); }
+function saveCredentials() { saveJsonStore(CREDENTIALS_FILE, credentialsStore); }
+function saveAuditLogs() { saveJsonStore(AUDIT_LOGS_FILE, auditLogs); }
+function saveUsers() { saveJsonStore(USERS_FILE, usersStore); }
+
+// ============================================================================
+// SYSTEM BACKUP & DISASTER RECOVERY SUBSYSTEM
+// ============================================================================
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_SCHEDULE_FILE = path.join(DATA_DIR, 'backup_schedule.json');
+
+try {
+  if (!fs.existsSync(BACKUPS_DIR)) {
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    console.log(`[STORAGE] Created backups directory at: ${BACKUPS_DIR}`);
+  }
+} catch (err: any) {
+  console.error(`[STORAGE] Error initializing backups directory ${BACKUPS_DIR}:`, err.message);
+}
+
+const defaultScheduleConfig: BackupScheduleConfig = {
+  enabled: true,
+  frequency: 'daily',
+  time: '02:00',
+  retention_count: 10,
+  last_run: undefined,
+  next_run: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+};
+
+let backupSchedule: BackupScheduleConfig = loadJsonStore(BACKUP_SCHEDULE_FILE, defaultScheduleConfig);
+function saveBackupSchedule() { saveJsonStore(BACKUP_SCHEDULE_FILE, backupSchedule); }
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+function createBackupSnapshot(createdBy: string, description?: string, isAutomatic: boolean = false): BackupMetadata {
+  const timestamp = new Date().toISOString();
+  const dateStr = timestamp.replace(/[:.]/g, '-');
+  const filename = `netgateway-backup-${dateStr}.json`;
+  const filePath = path.join(BACKUPS_DIR, filename);
+
+  const payload: BackupDataPayload = {
+    version: '1.0.0',
+    created_at: timestamp,
+    created_by: createdBy,
+    description: description || (isAutomatic ? 'Respaldo automático del sistema' : 'Respaldo manual'),
+    is_automatic: isAutomatic,
+    metadata: {
+      system: 'NetGateway Enterprise',
+      node_version: process.version,
+      platform: process.platform,
+      device_count: devicesStore.length,
+      credential_count: credentialsStore.length,
+      user_count: usersStore.length,
+      audit_log_count: auditLogs.length,
+    },
+    devices: devicesStore,
+    credentials: credentialsStore,
+    users: usersStore,
+    audit_logs: auditLogs,
+  };
+
+  const jsonString = JSON.stringify(payload, null, 2);
+  fs.writeFileSync(filePath, jsonString, 'utf-8');
+
+  const stats = fs.statSync(filePath);
+  const hash = crypto.createHash('sha256').update(jsonString).digest('hex');
+
+  // Enforce retention limit if configured
+  if (backupSchedule.retention_count && backupSchedule.retention_count > 0) {
+    try {
+      const allFiles = fs.readdirSync(BACKUPS_DIR)
+        .filter(f => f.endsWith('.json'))
+        .map(f => ({ name: f, path: path.join(BACKUPS_DIR, f), ctime: fs.statSync(path.join(BACKUPS_DIR, f)).ctime.getTime() }))
+        .sort((a, b) => b.ctime - a.ctime);
+
+      if (allFiles.length > backupSchedule.retention_count) {
+        const toDelete = allFiles.slice(backupSchedule.retention_count);
+        for (const file of toDelete) {
+          fs.unlinkSync(file.path);
+          console.log(`[BACKUP] Pruned old backup past retention limit: ${file.name}`);
+        }
+      }
+    } catch (e: any) {
+      console.warn('[BACKUP] Failed pruning old backups:', e.message);
+    }
+  }
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp,
+    user: createdBy,
+    action: 'BACKUP_CREATE',
+    details: `Created system backup: ${filename} (${formatBytes(stats.size)}) [${devicesStore.length} devices, ${credentialsStore.length} credentials]`,
+    status: 'success',
+  });
+  saveAuditLogs();
+
+  const metadata: BackupMetadata = {
+    id: `bkp-${Date.now()}`,
+    filename,
+    timestamp,
+    size_bytes: stats.size,
+    size_formatted: formatBytes(stats.size),
+    created_by: createdBy,
+    description: payload.description,
+    device_count: devicesStore.length,
+    credential_count: credentialsStore.length,
+    user_count: usersStore.length,
+    audit_log_count: auditLogs.length,
+    checksum: hash,
+    is_automatic: isAutomatic,
+  };
+
+  return metadata;
+}
+
+// Background scheduler interval (checks hourly)
+setInterval(() => {
+  if (!backupSchedule.enabled) return;
+  const now = new Date();
+  const [targetH, targetM] = (backupSchedule.time || '02:00').split(':').map(Number);
+  const todayStr = now.toISOString().slice(0, 10);
+  const lastRunDay = backupSchedule.last_run ? backupSchedule.last_run.slice(0, 10) : '';
+
+  if (now.getHours() === targetH && lastRunDay !== todayStr) {
+    try {
+      console.log(`[BACKUP] Executing scheduled automatic backup at ${now.toISOString()}`);
+      createBackupSnapshot('system_scheduler', 'Respaldo automático programado', true);
+      backupSchedule.last_run = now.toISOString();
+      backupSchedule.next_run = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
+      saveBackupSchedule();
+    } catch (err: any) {
+      console.error('[BACKUP] Scheduled backup failed:', err.message);
+    }
+  }
+}, 600000);
+
 
 // Authentication Middleware
 function authenticateToken(req: Request, res: Response, next: () => void) {
@@ -435,6 +644,7 @@ app.post('/api/v1/users', authenticateToken, (req: Request, res: Response) => {
   };
 
   usersStore.unshift(newUser);
+  saveUsers();
 
   // Audit
   auditLogs.unshift({
@@ -445,6 +655,7 @@ app.post('/api/v1/users', authenticateToken, (req: Request, res: Response) => {
     details: `Created new user account: "${newUser.username}" (${newUser.role})`,
     status: 'success',
   });
+  saveAuditLogs();
 
   const { passwordHash, ...cleanUser } = newUser;
   res.status(201).json({ user: cleanUser });
@@ -473,6 +684,8 @@ app.put('/api/v1/users/:id', authenticateToken, (req: Request, res: Response) =>
     target.passwordHash = bcrypt.hashSync(password.trim(), 10);
   }
 
+  saveUsers();
+
   auditLogs.unshift({
     id: `log-${Date.now()}`,
     timestamp: new Date().toISOString(),
@@ -481,6 +694,7 @@ app.put('/api/v1/users/:id', authenticateToken, (req: Request, res: Response) =>
     details: `Updated user account parameters for "${target.username}"`,
     status: 'success',
   });
+  saveAuditLogs();
 
   const { passwordHash, ...cleanUser } = target;
   res.json({ user: cleanUser });
@@ -502,6 +716,7 @@ app.delete('/api/v1/users/:id', authenticateToken, (req: Request, res: Response)
   }
 
   usersStore = usersStore.filter(u => u.id !== req.params.id);
+  saveUsers();
 
   auditLogs.unshift({
     id: `log-${Date.now()}`,
@@ -511,6 +726,7 @@ app.delete('/api/v1/users/:id', authenticateToken, (req: Request, res: Response)
     details: `Deleted user account: "${target.username}"`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.json({ message: 'User deleted successfully' });
 });
@@ -558,7 +774,7 @@ app.post('/api/v1/devices', authenticateToken, (req: Request, res: Response) => 
     return res.status(403).json({ error: 'Forbidden: Auditor role cannot create devices' });
   }
 
-  const { hostname, management_ip, vendor, model, os_version, connection_type, port, terminal_line, credentials_id, location, tags, description } = req.body;
+  const { hostname, management_ip, vendor, model, os_version, connection_type, port, terminal_line, credentials_id, location, tags, description, serial_number, asset_id } = req.body;
 
   if (!hostname || !management_ip || !vendor || !model) {
     return res.status(400).json({ error: 'Missing required device parameters (hostname, IP, vendor, model)' });
@@ -581,9 +797,12 @@ app.post('/api/v1/devices', authenticateToken, (req: Request, res: Response) => 
     uptime: '1 day, 0 hours',
     last_seen: new Date().toISOString(),
     description: description || '',
+    serial_number: serial_number ? String(serial_number).trim() : undefined,
+    asset_id: asset_id && String(asset_id).trim() ? String(asset_id).trim() : `ACT-${Math.floor(1000 + Math.random() * 9000)}`,
   };
 
   devicesStore.unshift(newDevice);
+  saveDevices();
 
   // Audit
   auditLogs.unshift({
@@ -593,9 +812,10 @@ app.post('/api/v1/devices', authenticateToken, (req: Request, res: Response) => 
     action: 'DEVICE_CREATE',
     device_id: newDevice.id,
     device_hostname: newDevice.hostname,
-    details: `Created new inventory asset: ${newDevice.hostname} (${newDevice.management_ip})`,
+    details: `Created new inventory asset: ${newDevice.hostname} (${newDevice.management_ip}) [Asset ID: ${newDevice.asset_id}]`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.status(201).json({ device: newDevice });
 });
@@ -638,6 +858,8 @@ app.post('/api/v1/devices/bulk', authenticateToken, (req: Request, res: Response
       uptime: '1 day, 0 hours',
       last_seen: new Date().toISOString(),
       description: d.description ? String(d.description).trim() : 'Bulk imported asset',
+      serial_number: d.serial_number ? String(d.serial_number).trim() : undefined,
+      asset_id: d.asset_id && String(d.asset_id).trim() ? String(d.asset_id).trim() : `ACT-${Math.floor(1000 + Math.random() * 9000)}`,
     };
 
     devicesStore.unshift(newDevice);
@@ -645,14 +867,17 @@ app.post('/api/v1/devices/bulk', authenticateToken, (req: Request, res: Response
   }
 
   if (createdDevices.length > 0) {
+    saveDevices();
+
     auditLogs.unshift({
       id: `log-${Date.now()}`,
       timestamp: new Date().toISOString(),
       user: user.username,
       action: 'DEVICE_CREATE',
-      details: `Bulk imported ${createdDevices.length} network inventory assets (${createdDevices.map(d => d.hostname).slice(0, 5).join(', ')}${createdDevices.length > 5 ? '...' : ''})`,
+      details: `Bulk imported ${createdDevices.length} network inventory assets (${createdDevices.map(d => `${d.hostname} [${d.asset_id}]`).slice(0, 5).join(', ')}${createdDevices.length > 5 ? '...' : ''})`,
       status: 'success',
     });
+    saveAuditLogs();
   }
 
   res.status(201).json({
@@ -679,6 +904,8 @@ app.put('/api/v1/devices/:id', authenticateToken, (req: Request, res: Response) 
     id: devicesStore[idx].id, // Prevent ID override
   };
 
+  saveDevices();
+
   auditLogs.unshift({
     id: `log-${Date.now()}`,
     timestamp: new Date().toISOString(),
@@ -686,9 +913,10 @@ app.put('/api/v1/devices/:id', authenticateToken, (req: Request, res: Response) 
     action: 'DEVICE_UPDATE',
     device_id: devicesStore[idx].id,
     device_hostname: devicesStore[idx].hostname,
-    details: `Updated device parameters for ${devicesStore[idx].hostname}`,
+    details: `Updated device parameters for ${devicesStore[idx].hostname} (Asset ID: ${devicesStore[idx].asset_id || 'N/A'})`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.json({ device: devicesStore[idx] });
 });
@@ -705,6 +933,7 @@ app.delete('/api/v1/devices/:id', authenticateToken, (req: Request, res: Respons
   }
 
   devicesStore = devicesStore.filter(d => d.id !== req.params.id);
+  saveDevices();
 
   auditLogs.unshift({
     id: `log-${Date.now()}`,
@@ -713,12 +942,14 @@ app.delete('/api/v1/devices/:id', authenticateToken, (req: Request, res: Respons
     action: 'DEVICE_DELETE',
     device_id: dev.id,
     device_hostname: dev.hostname,
-    details: `Decommissioned asset: ${dev.hostname} (${dev.management_ip})`,
+    details: `Decommissioned asset: ${dev.hostname} (${dev.management_ip}) [Asset ID: ${dev.asset_id || 'N/A'}]`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.json({ message: 'Device deleted successfully' });
 });
+
 
 // Real ICMP / TCP Connectivity Prober
 app.post('/api/v1/devices/:id/ping', authenticateToken, (req: Request, res: Response) => {
@@ -872,6 +1103,7 @@ app.post('/api/v1/credentials', authenticateToken, (req: Request, res: Response)
   };
 
   credentialsStore.push(newCred);
+  saveCredentials();
 
   auditLogs.unshift({
     id: `log-${Date.now()}`,
@@ -881,6 +1113,7 @@ app.post('/api/v1/credentials', authenticateToken, (req: Request, res: Response)
     details: `Created vault credential profile: "${newCred.name}" (username: ${newCred.username})`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.status(201).json({
     credential: {
@@ -921,6 +1154,8 @@ app.put('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Respon
   }
   target.last_used = new Date().toISOString();
 
+  saveCredentials();
+
   auditLogs.unshift({
     id: `log-${Date.now()}`,
     timestamp: new Date().toISOString(),
@@ -929,6 +1164,7 @@ app.put('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Respon
     details: `Updated vault credential profile: "${target.name}" (username: ${target.username})`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.json({
     credential: {
@@ -955,6 +1191,7 @@ app.delete('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Res
   }
 
   credentialsStore = credentialsStore.filter(c => c.id !== req.params.id);
+  saveCredentials();
 
   auditLogs.unshift({
     id: `log-${Date.now()}`,
@@ -964,6 +1201,7 @@ app.delete('/api/v1/credentials/:id', authenticateToken, (req: Request, res: Res
     details: `Deleted vault credential profile: "${target.name}"`,
     status: 'success',
   });
+  saveAuditLogs();
 
   res.json({ message: 'Credential deleted successfully' });
 });
@@ -977,6 +1215,340 @@ app.get('/api/v1/audit/logs', authenticateToken, (req: Request, res: Response) =
   }
   res.json({ logs: filtered.slice(0, Number(limit)) });
 });
+
+// ---------------- SYSTEM BACKUPS & RESTORE API ----------------
+
+// 1. List all available backups
+app.get('/api/v1/backups', authenticateToken, (req: Request, res: Response) => {
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      return res.json({ backups: [] });
+    }
+    const files = fs.readdirSync(BACKUPS_DIR).filter(f => f.endsWith('.json'));
+    const backups: BackupMetadata[] = [];
+
+    for (const f of files) {
+      try {
+        const p = path.join(BACKUPS_DIR, f);
+        const stat = fs.statSync(p);
+        const raw = fs.readFileSync(p, 'utf-8');
+        const parsed = JSON.parse(raw);
+        const hash = crypto.createHash('sha256').update(raw).digest('hex');
+
+        backups.push({
+          id: `bkp-${stat.mtimeMs}`,
+          filename: f,
+          timestamp: parsed.created_at || stat.mtime.toISOString(),
+          size_bytes: stat.size,
+          size_formatted: formatBytes(stat.size),
+          created_by: parsed.created_by || 'system',
+          description: parsed.description || '',
+          device_count: Array.isArray(parsed.devices) ? parsed.devices.length : 0,
+          credential_count: Array.isArray(parsed.credentials) ? parsed.credentials.length : 0,
+          user_count: Array.isArray(parsed.users) ? parsed.users.length : 0,
+          audit_log_count: Array.isArray(parsed.audit_logs) ? parsed.audit_logs.length : 0,
+          checksum: hash,
+          is_automatic: parsed.is_automatic || false,
+        });
+      } catch (err: any) {
+        console.warn(`[BACKUP] Skipping unreadable backup file ${f}:`, err.message);
+      }
+    }
+
+    backups.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    res.json({ backups });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to retrieve backups: ${err.message}` });
+  }
+});
+
+// 2. Create manual backup on-demand
+app.post('/api/v1/backups', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role === 'auditor') {
+    return res.status(403).json({ error: 'Forbidden: Auditor cannot create system backups' });
+  }
+
+  try {
+    const description = req.body.description ? String(req.body.description).trim() : 'Respaldo manual del sistema';
+    const metadata = createBackupSnapshot(user.username, description, false);
+    res.status(201).json({
+      message: 'Respaldo generado y almacenado con éxito en el volumen persistente',
+      backup: metadata,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Error creating backup: ${err.message}` });
+  }
+});
+
+// 3. Download backup file to administrator PC
+app.get('/api/v1/backups/:filename/download', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role === 'auditor') {
+    return res.status(403).json({ error: 'Forbidden: Auditor cannot download system backups' });
+  }
+
+  const filename = req.params.filename;
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(filename) || !filename.endsWith('.json')) {
+    return res.status(400).json({ error: 'Invalid backup filename' });
+  }
+
+  const filePath = path.join(BACKUPS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Backup file not found' });
+  }
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    user: user.username,
+    action: 'BACKUP_DOWNLOAD',
+    details: `Exported system backup for offsite storage: "${filename}"`,
+    status: 'success',
+  });
+  saveAuditLogs();
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', 'application/json');
+  const stream = fs.createReadStream(filePath);
+  stream.pipe(res);
+});
+
+// 4. Upload / Import an existing backup file from administrator PC
+app.post('/api/v1/backups/upload', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can upload and register backups' });
+  }
+
+  try {
+    const { filename, content } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: 'No backup content provided' });
+    }
+
+    const parsed = typeof content === 'string' ? JSON.parse(content) : content;
+    if (!parsed.devices || !Array.isArray(parsed.devices)) {
+      return res.status(400).json({ error: 'Formato de respaldo inválido: no contiene lista de dispositivos' });
+    }
+
+    const safeName = filename && /^[a-zA-Z0-9_\-\.]+$/.test(filename) && filename.endsWith('.json')
+      ? `imported-${Date.now()}-${filename}`
+      : `netgateway-backup-imported-${Date.now()}.json`;
+
+    const targetPath = path.join(BACKUPS_DIR, safeName);
+    const jsonStr = JSON.stringify(parsed, null, 2);
+    fs.writeFileSync(targetPath, jsonStr, 'utf-8');
+
+    const stat = fs.statSync(targetPath);
+    const hash = crypto.createHash('sha256').update(jsonStr).digest('hex');
+
+    auditLogs.unshift({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      user: user.username,
+      action: 'BACKUP_CREATE',
+      details: `Imported external backup file "${safeName}" (${formatBytes(stat.size)})`,
+      status: 'success',
+    });
+    saveAuditLogs();
+
+    const metadata: BackupMetadata = {
+      id: `bkp-${Date.now()}`,
+      filename: safeName,
+      timestamp: parsed.created_at || new Date().toISOString(),
+      size_bytes: stat.size,
+      size_formatted: formatBytes(stat.size),
+      created_by: user.username,
+      description: parsed.description ? `(Importado) ${parsed.description}` : 'Respaldo importado externamente',
+      device_count: Array.isArray(parsed.devices) ? parsed.devices.length : 0,
+      credential_count: Array.isArray(parsed.credentials) ? parsed.credentials.length : 0,
+      user_count: Array.isArray(parsed.users) ? parsed.users.length : 0,
+      audit_log_count: Array.isArray(parsed.audit_logs) ? parsed.audit_logs.length : 0,
+      checksum: hash,
+      is_automatic: false,
+    };
+
+    res.status(201).json({
+      message: 'Archivo de respaldo subido y registrado exitosamente',
+      backup: metadata,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: `Error procesando archivo de respaldo: ${err.message}` });
+  }
+});
+
+// 5. Restore platform from a backup snapshot
+app.post('/api/v1/backups/:filename/restore', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can restore platform backups' });
+  }
+
+  const filename = req.params.filename;
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(filename) || !filename.endsWith('.json')) {
+    return res.status(400).json({ error: 'Invalid backup filename' });
+  }
+
+  const filePath = path.join(BACKUPS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Backup file not found' });
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed: BackupDataPayload = JSON.parse(raw);
+
+    if (!parsed.devices || !Array.isArray(parsed.devices)) {
+      return res.status(400).json({ error: 'Invalid backup: missing devices payload' });
+    }
+
+    // 1. Create a pre-restore safety snapshot automatically
+    console.log('[BACKUP] Creating pre-restore safety snapshot...');
+    createBackupSnapshot(user.username, `Snapshot de seguridad previo a restaurar "${filename}"`, false);
+
+    // 2. Perform restoration
+    const components = req.body.components || ['devices', 'credentials', 'users', 'audit_logs'];
+
+    let restoredDevices = 0;
+    let restoredCredentials = 0;
+    let restoredUsers = 0;
+
+    if (components.includes('devices') && Array.isArray(parsed.devices)) {
+      devicesStore = parsed.devices;
+      saveDevices();
+      restoredDevices = devicesStore.length;
+    }
+
+    if (components.includes('credentials') && Array.isArray(parsed.credentials)) {
+      credentialsStore = parsed.credentials;
+      saveCredentials();
+      restoredCredentials = credentialsStore.length;
+    }
+
+    if (components.includes('users') && Array.isArray(parsed.users)) {
+      // Ensure the current user still exists so they don't lock themselves out!
+      const currentExists = parsed.users.some(u => u.username === user.username);
+      if (!currentExists) {
+        // Keep current admin user in the restored store
+        parsed.users.push(user as any);
+      }
+      usersStore = parsed.users;
+      saveUsers();
+      restoredUsers = usersStore.length;
+    }
+
+    if (components.includes('audit_logs') && Array.isArray(parsed.audit_logs)) {
+      // Merge audit logs
+      const combined = [...parsed.audit_logs, ...auditLogs];
+      const seen = new Set();
+      auditLogs = combined.filter(l => {
+        if (seen.has(l.id)) return false;
+        seen.add(l.id);
+        return true;
+      }).slice(0, 500);
+      saveAuditLogs();
+    }
+
+    // Log the restore event
+    auditLogs.unshift({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      user: user.username,
+      action: 'BACKUP_RESTORE',
+      details: `Restored system state from backup "${filename}" (${restoredDevices} devices, ${restoredCredentials} credentials, ${restoredUsers} users)`,
+      status: 'success',
+    });
+    saveAuditLogs();
+
+    res.json({
+      message: 'Sistema restaurado exitosamente',
+      details: {
+        filename,
+        devices: restoredDevices,
+        credentials: restoredCredentials,
+        users: restoredUsers,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to restore backup: ${err.message}` });
+  }
+});
+
+// 6. Delete an old backup file
+app.delete('/api/v1/backups/:filename', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can delete backups' });
+  }
+
+  const filename = req.params.filename;
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(filename) || !filename.endsWith('.json')) {
+    return res.status(400).json({ error: 'Invalid backup filename' });
+  }
+
+  const filePath = path.join(BACKUPS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Backup file not found' });
+  }
+
+  try {
+    fs.unlinkSync(filePath);
+
+    auditLogs.unshift({
+      id: `log-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      user: user.username,
+      action: 'BACKUP_DELETE',
+      details: `Purged system backup: "${filename}"`,
+      status: 'success',
+    });
+    saveAuditLogs();
+
+    res.json({ message: 'Respaldo eliminado correctamente' });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to delete backup: ${err.message}` });
+  }
+});
+
+// 7. Get Backup Schedule Configuration
+app.get('/api/v1/backups/schedule', authenticateToken, (req: Request, res: Response) => {
+  res.json({ schedule: backupSchedule });
+});
+
+// 8. Update Backup Schedule Configuration
+app.put('/api/v1/backups/schedule', authenticateToken, (req: Request, res: Response) => {
+  const user: User = (req as any).user;
+  if (user && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: Only Administrator can configure backup schedule' });
+  }
+
+  const { enabled, frequency, time, retention_count } = req.body;
+  if (enabled !== undefined) backupSchedule.enabled = Boolean(enabled);
+  if (frequency && ['daily', 'weekly', 'hourly'].includes(frequency)) backupSchedule.frequency = frequency;
+  if (time && /^([01]\d|2[0-3]):[0-5]\d$/.test(time)) backupSchedule.time = time;
+  if (retention_count !== undefined && Number(retention_count) > 0) {
+    backupSchedule.retention_count = Number(retention_count);
+  }
+
+  saveBackupSchedule();
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    user: user.username,
+    action: 'CONFIG_CHANGE',
+    details: `Updated automatic backup policy: enabled=${backupSchedule.enabled}, time=${backupSchedule.time}, retention=${backupSchedule.retention_count}`,
+    status: 'success',
+  });
+  saveAuditLogs();
+
+  res.json({
+    message: 'Política de respaldos automáticos actualizada',
+    schedule: backupSchedule,
+  });
+});
+
 
 // ---------------- INTERACTIVE WEB TERMINAL GATEWAY (WebSocket) ----------------
 const wss = new WebSocketServer({ noServer: true });

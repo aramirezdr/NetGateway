@@ -11,6 +11,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - DATA_DIR=/app/data
       - JWT_SECRET=change-this-to-a-strong-secret-in-production-2026
     # NOTE FOR ENTERPRISE DEPLOYMENTS:
     # If your network devices (Cisco/Aruba/Palo Alto) are on private VLANs
@@ -18,13 +19,11 @@ services:
     # network_mode: "host"
     # (and comment out the ports section above)
     volumes:
-      - netgateway_data:/app/data
+      # Host bind mount: all devices, credentials, users, and audit logs persist directly in ./data on your host machine
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-volumes:
-  netgateway_data:
-    driver: local

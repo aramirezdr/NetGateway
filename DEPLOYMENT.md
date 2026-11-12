@@ -13,8 +13,10 @@ This guide provides step-by-step instructions for deploying **NetGateway** in yo
 4. [Option 3: Native Node.js & systemd Service](#option-3-native-nodejs--systemd-service)
 5. [Option 4: Nginx Reverse Proxy with SSL (HTTPS / WSS)](#option-4-nginx-reverse-proxy-with-ssl-https--wss)
 6. [Option 5: Python FastAPI Reference Backend (asyncssh)](#option-5-python-fastapi-reference-backend-asyncssh)
-7. [Verifying Connectivity with Real Network Devices](#verifying-connectivity-with-real-network-devices)
-8. [Versión en Español](#guía-de-despliegue-empresarial--netgateway-español)
+7. [Data Persistence Architecture (`./data:/app/data`)](#data-persistence-architecture-datadata)
+8. [System Backups & Disaster Recovery (Web UI & REST API)](#system-backups--disaster-recovery-web-ui--rest-api)
+9. [Verifying Connectivity with Real Network Devices](#verifying-connectivity-with-real-network-devices)
+10. [Versión en Español](#guía-de-despliegue-empresarial--netgateway-español)
 
 ---
 
@@ -272,14 +274,79 @@ If your enterprise backend policy requires Python:
 
 ---
 
+## 💾 Data Persistence Architecture (`./data:/app/data`)
+
+NetGateway utilizes an atomic, transactional JSON database engine stored in `./data` on your host filesystem and mounted inside the container to `/app/data`.
+
+### Persistent Host File Layout (`./data/`)
+| Host Path | Internal Function |
+| :--- | :--- |
+| `./data/devices.json` | Stores registered routers, switches, firewalls, and **physical asset codes (`asset_id`)**. |
+| `./data/credentials.json` | Stores AES-256-GCM encrypted TACACS+, password, and SSH key vault profiles. |
+| `./data/users.json` | Stores local operator and administrative accounts with `bcrypt` password hashes. |
+| `./data/audit_logs.json` | Stores compliance audit records for command execution and session lifecycle. |
+| `./data/backup_schedule.json` | Stores automated snapshot scheduling and retention rotation policies. |
+| `./data/backups/*.json` | Immutable, timestamped point-in-time system backup archives with SHA-256 checksums. |
+
+### Guaranteeing Zero Data Loss across Rebuilds (`--build`):
+Whenever you update source code and rebuild the image:
+```bash
+docker compose up -d --build
+# or with Podman:
+podman compose up -d --build
+```
+Because `./data` is a **host bind mount**, all devices, credentials, audit records, and backups remain completely untouched on your host machine.
+
+### Manual Host Backup (CLI Archive):
+```bash
+# Create a timestamped archive of the complete data volume
+tar -czvf netgateway_backup_$(date +%F).tar.gz ./data/
+```
+
+### Manual Host Restore (CLI Archive):
+```bash
+# 1. Stop the container
+docker compose down   # or podman compose down
+
+# 2. Extract the archive into the project directory
+tar -xzvf netgateway_backup_2026-11-12.tar.gz
+
+# 3. Start the container
+docker compose up -d  # or podman compose up -d
+```
+
+---
+
+## 🗄️ System Backups & Disaster Recovery (Web UI & REST API)
+
+NetGateway features a comprehensive Disaster Recovery subsystem directly accessible in the **`Backups`** view:
+
+1. **On-Demand Snapshots:**
+   * Click **`Crear Respaldo Ahora`** and specify an optional description (e.g., *"Pre-core router maintenance"*).
+   * Generates a point-in-time JSON archive in `./data/backups/netgateway-backup-*.json` and computes its cryptographic SHA-256 checksum.
+2. **Offline Cold Storage Download:**
+   * Click **`Descargar`** on any snapshot to store the `.json` file on an administrator PC or external backup tape/SAN.
+3. **External Archive Upload:**
+   * Click **`Subir Respaldo`** to import an existing `.json` file from another server or historical backup.
+4. **Pre-Restore Safety Guarantee:**
+   * Click **`Restaurar`** to recover a previous state.
+   * **Safety Mechanism:** Before overwriting the active environment, the backend automatically generates a safety backup snapshot of the current state.
+   * **Selective Restore:** Selectively restore Devices, Credentials, Users, or Audit Logs.
+5. **Automated Scheduler & Retention Rotation:**
+   * Click **`Programación Automática`** to enable Daily, Weekly, or Hourly automatic backups at a specific time (e.g., `02:00`).
+   * Configure retention count (e.g., keep the last 10 snapshots) to automatically prune older files and conserve disk space.
+
+---
+
 ## Verifying Connectivity with Real Network Devices
 
 1. Open NetGateway in your browser and log in with your administrative account (`admin` / `AdminPassword2026!`).
 2. Navigate to **`Credentials Vault`** and store your SSH keys or TACACS+/RADIUS credentials with AES-256 encryption.
 3. Click **`+ Add Network Device`** (or **`Bulk Import`** to import multiple devices via CSV/JSON).
-4. Enter your real router/switch/firewall management IP (e.g., `10.240.0.1`), vendor, and select the corresponding Vault Credential profile.
-5. Click the **`Ping`** button to run an ICMP reachability test from the server to the device.
-6. Click **`Web CLI`** to open the interactive browser-based terminal session.
+4. Enter your real router/switch/firewall management IP (e.g., `10.240.0.1`), vendor, port, and **ID de Inventario (`asset_id`)**.
+5. Select the corresponding Vault Credential profile.
+6. Click the **`Ping`** button to run an ICMP reachability test from the server to the device.
+7. Click **`Web CLI`** to open the interactive browser-based terminal session.
 
 ---
 ---
@@ -289,6 +356,19 @@ If your enterprise backend policy requires Python:
 > **Idioma:** [English (Primary)](#enterprise-deployment-guide--netgateway) | **Español (Secundaria)**
 
 Esta sección detalla los pasos para desplegar **NetGateway** en tu propia infraestructura corporativa (servidores físicos, máquinas virtuales en Proxmox/VMware, o instancias en la nube) para gestionar tu inventario y conectarte a tus routers, switches y firewalls reales.
+
+---
+
+## Tabla de Contenidos
+1. [Requisitos Previos del Servidor](#requisitos-previos-del-servidor)
+2. [Opción 1: Despliegue con Docker y Docker Compose (Recomendado)](#opción-1-despliegue-con-docker-y-docker-compose-recomendado)
+3. [Opción 2: Despliegue con Podman (Rootless y Enterprise Linux / RHEL / Rocky)](#opción-2-despliegue-con-podman-rootless-y-enterprise-linux--rhel--rocky)
+4. [Opción 3: Despliegue Nativo con Node.js y systemd](#opción-3-despliegue-nativo-con-nodejs-y-systemd)
+5. [Opción 4: Reverse Proxy con Nginx y Certificados SSL (HTTPS/WSS)](#opción-4-reverse-proxy-con-nginx-y-certificados-ssl-httpswss)
+6. [Opción 5: Backend de Referencia en Python (FastAPI + asyncssh)](#opción-5-backend-de-referencia-en-python-fastapi--asyncssh)
+7. [Persistencia de Datos y Respaldos (Docker & Podman)](#-persistencia-de-datos-y-respaldos-docker--podman)
+8. [Módulo Integrado de Respaldos (Web UI & REST API)](#️-módulo-integrado-de-respaldos-web-ui--rest-api)
+9. [Verificación de Conectividad con tus Equipos Reales](#verificación-de-conectividad-con-tus-equipos-reales)
 
 ---
 
@@ -545,17 +625,6 @@ Si tu infraestructura corporativa exige la ejecución del backend en Python:
 
 ---
 
-## Verificación de Conectividad con tus Equipos Reales
-
-1. Inicia sesión en NetGateway con la cuenta `admin` / `AdminPassword2026!`.
-2. Ve al **`Credentials Vault`** y guarda tus claves SSH o credenciales TACACS+/RADIUS con cifrado AES-256.
-3. Ve a **`+ Add Network Device`** (o **`Bulk Import`** para importar múltiples equipos desde CSV/JSON).
-4. Ingresa la IP de gestión de tu switch o router real (ej: `10.240.0.1`), fabricante y selecciona el perfil de credencial correspondiente.
-5. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
-6. Haz clic en **`Web CLI`** para abrir la consola SSH interactiva directamente en tu navegador.
-
----
-
 ## 💾 Persistencia de Datos y Respaldos (Docker & Podman)
 
 NetGateway utiliza un motor de almacenamiento JSON transaccional con escrituras atómicas en disco montado en `./data:/app/data`.
@@ -567,6 +636,8 @@ NetGateway utiliza un motor de almacenamiento JSON transaccional con escrituras 
 | `credentials.json` | Perfiles de acceso SSH/Telnet cifrados con AES-256-GCM. |
 | `users.json` | Cuentas locales de usuarios, hashes bcrypt y roles RBAC (Admin, Engineer, Operator, Auditor). |
 | `audit_logs.json` | Historial de auditoría, aperturas de sesión SSH y comandos ejecutados. |
+| `backup_schedule.json` | Configuración de programación automática y retención de snapshots. |
+| `backups/*.json` | Snapshots inmutables de respaldo fechados con hash criptográfico SHA-256. |
 
 ### Cómo Crear un Respaldo (Backup)
 ```bash
@@ -590,7 +661,7 @@ docker compose up -d  # o podman compose up -d
 Cada vez que realices cambios de código y ejecutes:
 ```bash
 docker compose up -d --build
-# o
+# o con Podman:
 podman compose up -d --build
 ```
 El volumen montado `./data:/app/data` mantiene **intactos** todos los equipos agregados, credenciales guardadas y registros de auditoría, eliminando cualquier pérdida de información entre versiones y despliegues.
@@ -615,5 +686,18 @@ NetGateway incluye ahora una pestaña dedicada de **Backups (Respaldos del Siste
 5. **Programación Automática (Scheduler):**
    * Configura respaldos diarios o semanales con hora programada (ej. `02:00`).
    * Define la **política de retención** (ej. conservar los últimos 10 respaldos y rotar automáticamente los más antiguos para cuidar el espacio en disco).
+
+---
+
+## Verificación de Conectividad con tus Equipos Reales
+
+1. Inicia sesión en NetGateway con la cuenta `admin` / `AdminPassword2026!`.
+2. Ve al **`Credentials Vault`** y guarda tus claves SSH o credenciales TACACS+/RADIUS con cifrado AES-256.
+3. Ve a **`+ Add Network Device`** (o **`Bulk Import`** para importar múltiples equipos desde CSV/JSON).
+4. Ingresa la IP de gestión de tu switch o router real (ej: `10.240.0.1`), fabricante, puerto y el **Código de Inventario (`asset_id`)**.
+5. Selecciona el perfil de credencial correspondiente.
+6. Haz clic en **`Ping`** para verificar que el servidor alcanza el equipo mediante ICMP.
+7. Haz clic en **`Web CLI`** para abrir la consola SSH interactiva directamente en tu navegador.
+
 
 
